@@ -168,34 +168,156 @@
 
   <!-- Install -->
   <section class="max-w-3xl mx-auto px-6 py-24" id="install">
-    <h2 class="text-center text-xl md:text-2xl font-bold text-white mb-4">Quick Start</h2>
-    <p class="text-center text-gray-500 text-sm mb-12">Up and running in under a minute</p>
-    <div class="bg-surface border border-border rounded-lg overflow-hidden">
-      <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
-        <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
-        <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
-        <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
-        <span class="text-gray-600 text-xs ml-2">terminal</span>
-      </div>
-      <div class="p-6 text-sm leading-loose">
-        <p><span class="text-green">$</span> <span class="text-gray-300">git clone https://github.com/skyline69/agcp</span></p>
-        <p><span class="text-green">$</span> <span class="text-gray-300">cd agcp && cargo build --release</span></p>
-        <p class="text-gray-600 mt-4"># Authenticate with Google</p>
-        <p><span class="text-green">$</span> <span class="text-gray-300">./target/release/agcp login</span></p>
-        <p class="text-gray-600 mt-4"># Start the proxy</p>
-        <p><span class="text-green">$</span> <span class="text-gray-300">./target/release/agcp</span></p>
-        <p class="text-gray-600 mt-4"># Configure your AI tool to use</p>
-        <p class="text-cyan">http://127.0.0.1:8080</p>
-      </div>
+    <h2 class="text-center text-xl md:text-2xl font-bold text-white mb-4">Installation</h2>
+    <p class="text-center text-gray-500 text-sm mb-12">Choose your preferred method</p>
+
+    <!-- Tab buttons -->
+    <div class="flex flex-wrap justify-center gap-2 mb-8" id="install-tabs">
+      <button class="install-tab px-4 py-2 text-sm rounded border border-cyan/30 bg-cyan/10 text-cyan transition-all" data-tab="brew">Homebrew</button>
+      <button class="install-tab px-4 py-2 text-sm rounded border border-border bg-surface text-gray-400 hover:border-cyan/20 hover:text-gray-300 transition-all" data-tab="apt">APT</button>
+      <button class="install-tab px-4 py-2 text-sm rounded border border-border bg-surface text-gray-400 hover:border-cyan/20 hover:text-gray-300 transition-all" data-tab="dnf">DNF</button>
+      <button class="install-tab px-4 py-2 text-sm rounded border border-border bg-surface text-gray-400 hover:border-cyan/20 hover:text-gray-300 transition-all" data-tab="nix">Nix</button>
+      <button class="install-tab px-4 py-2 text-sm rounded border border-border bg-surface text-gray-400 hover:border-cyan/20 hover:text-gray-300 transition-all" data-tab="cargo">Cargo</button>
+      <button class="install-tab px-4 py-2 text-sm rounded border border-border bg-surface text-gray-400 hover:border-cyan/20 hover:text-gray-300 transition-all" data-tab="source">Source</button>
     </div>
-    <div class="mt-8 bg-surface border border-border rounded-lg overflow-hidden">
-      <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
-        <span class="text-gray-600 text-xs">setup</span>
+
+    <!-- Tab panels -->
+    <div id="install-panels">
+
+      <!-- Homebrew -->
+      <div class="install-panel" data-panel="brew">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+          <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
+            <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
+            <span class="text-gray-600 text-xs ml-2">terminal</span>
+          </div>
+          <div class="p-6 text-sm leading-loose">
+            <p><span class="text-green">$</span> <span class="text-gray-300">brew tap skyline69/agcp</span></p>
+            <p><span class="text-green">$</span> <span class="text-gray-300">brew install agcp</span></p>
+          </div>
+        </div>
+        <p class="text-gray-500 text-xs mt-4 text-center">macOS and Linux</p>
       </div>
-      <div class="p-6 text-sm leading-loose">
-        <p><span class="text-green">$</span> <span class="text-gray-300">agcp setup</span></p>
-        <p class="text-gray-600 mt-2"># Select your AI tool from the interactive menu</p>
-        <p class="text-gray-600"># Supports: Claude Code, OpenCode, Cursor, Cline, Codex</p>
+
+      <!-- APT -->
+      <div class="install-panel" data-panel="apt">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+          <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
+            <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
+            <span class="text-gray-600 text-xs ml-2">terminal</span>
+          </div>
+          <div class="p-6 text-sm leading-loose">
+            <p class="text-gray-600"># Add the GPG key and repository</p>
+            <p><span class="text-green">$</span> <span class="text-gray-300">curl -fsSL https://dasguney.com/apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/agcp.gpg</span></p>
+            <p><span class="text-green">$</span> <span class="text-gray-300">echo "deb [signed-by=/usr/share/keyrings/agcp.gpg] https://dasguney.com/apt stable main" | sudo tee /etc/apt/sources.list.d/agcp.list</span></p>
+            <p class="text-gray-600 mt-4"># Install</p>
+            <p><span class="text-green">$</span> <span class="text-gray-300">sudo apt update && sudo apt install agcp</span></p>
+          </div>
+        </div>
+        <p class="text-gray-500 text-xs mt-4 text-center">Debian, Ubuntu, and derivatives</p>
+      </div>
+
+      <!-- DNF -->
+      <div class="install-panel" data-panel="dnf">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+          <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
+            <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
+            <span class="text-gray-600 text-xs ml-2">terminal</span>
+          </div>
+          <div class="p-6 text-sm leading-loose">
+            <p class="text-gray-600"># Add the repository</p>
+            <p><span class="text-green">$</span> <span class="text-gray-300">sudo tee /etc/yum.repos.d/agcp.repo << 'EOF'</span></p>
+            <p class="text-gray-400 pl-4">[agcp]</p>
+            <p class="text-gray-400 pl-4">name=AGCP</p>
+            <p class="text-gray-400 pl-4">baseurl=https://dasguney.com/rpm/packages</p>
+            <p class="text-gray-400 pl-4">enabled=1</p>
+            <p class="text-gray-400 pl-4">gpgcheck=1</p>
+            <p class="text-gray-400 pl-4">gpgkey=https://dasguney.com/rpm/public.key</p>
+            <p><span class="text-gray-300">EOF</span></p>
+            <p class="text-gray-600 mt-4"># Install</p>
+            <p><span class="text-green">$</span> <span class="text-gray-300">sudo dnf install agcp</span></p>
+          </div>
+        </div>
+        <p class="text-gray-500 text-xs mt-4 text-center">Fedora, RHEL, CentOS, and derivatives</p>
+      </div>
+
+      <!-- Nix -->
+      <div class="install-panel" data-panel="nix">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+          <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
+            <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
+            <span class="text-gray-600 text-xs ml-2">terminal</span>
+          </div>
+          <div class="p-6 text-sm leading-loose">
+            <p class="text-gray-600"># Run directly</p>
+            <p><span class="text-green">$</span> <span class="text-gray-300">nix run github:skyline69/agcp</span></p>
+            <p class="text-gray-600 mt-4"># Or install into profile</p>
+            <p><span class="text-green">$</span> <span class="text-gray-300">nix profile install github:skyline69/agcp</span></p>
+          </div>
+        </div>
+        <p class="text-gray-500 text-xs mt-4 text-center">NixOS and any system with Nix</p>
+      </div>
+
+      <!-- Cargo -->
+      <div class="install-panel" data-panel="cargo">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+          <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
+            <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
+            <span class="text-gray-600 text-xs ml-2">terminal</span>
+          </div>
+          <div class="p-6 text-sm leading-loose">
+            <p><span class="text-green">$</span> <span class="text-gray-300">cargo install agcp</span></p>
+          </div>
+        </div>
+        <p class="text-gray-500 text-xs mt-4 text-center">Any platform with Rust installed</p>
+      </div>
+
+      <!-- Source -->
+      <div class="install-panel" data-panel="source">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+          <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
+            <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
+            <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
+            <span class="text-gray-600 text-xs ml-2">terminal</span>
+          </div>
+          <div class="p-6 text-sm leading-loose">
+            <p><span class="text-green">$</span> <span class="text-gray-300">git clone https://github.com/skyline69/agcp</span></p>
+            <p><span class="text-green">$</span> <span class="text-gray-300">cd agcp && cargo build --release</span></p>
+            <p><span class="text-green">$</span> <span class="text-gray-300">cp target/release/agcp ~/.local/bin/</span></p>
+          </div>
+        </div>
+        <p class="text-gray-500 text-xs mt-4 text-center">Build from source with Cargo</p>
+      </div>
+
+    </div>
+
+    <!-- Post-install quick start -->
+    <div class="mt-12">
+      <h3 class="text-center text-base font-bold text-white mb-6">Then get started</h3>
+      <div class="bg-surface border border-border rounded-lg overflow-hidden">
+        <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
+          <span class="text-gray-600 text-xs">setup</span>
+        </div>
+        <div class="p-6 text-sm leading-loose">
+          <p class="text-gray-600"># Authenticate with Google</p>
+          <p><span class="text-green">$</span> <span class="text-gray-300">agcp login</span></p>
+          <p class="text-gray-600 mt-4"># Start the proxy</p>
+          <p><span class="text-green">$</span> <span class="text-gray-300">agcp</span></p>
+          <p class="text-gray-600 mt-4"># Configure your AI tool</p>
+          <p><span class="text-green">$</span> <span class="text-gray-300">agcp setup</span></p>
+          <p class="text-gray-600 mt-2"># Supports: Claude Code, OpenCode, Cursor, Cline, Codex</p>
+        </div>
       </div>
     </div>
   </section>
@@ -238,6 +360,26 @@
       <a href="https://github.com/skyline69/agcp" class="hover:text-gray-400 transition-colors">github.com/skyline69/agcp</a>
     </div>
   </footer>
+
+  <!-- Install tab switching -->
+  <script>
+    document.querySelectorAll('.install-panel').forEach((p, i) => {
+      if (i > 0) p.style.display = 'none';
+    });
+    document.querySelectorAll('.install-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        const target = tab.dataset.tab;
+        document.querySelectorAll('.install-tab').forEach(t => {
+          t.classList.remove('border-cyan/30', 'bg-cyan/10', 'text-cyan');
+          t.classList.add('border-border', 'bg-surface', 'text-gray-400');
+        });
+        tab.classList.remove('border-border', 'bg-surface', 'text-gray-400');
+        tab.classList.add('border-cyan/30', 'bg-cyan/10', 'text-cyan');
+        document.querySelectorAll('.install-panel').forEach(p => p.style.display = 'none');
+        document.querySelector(`.install-panel[data-panel="${target}"]`).style.display = 'block';
+      });
+    });
+  </script>
 
   <!-- Fade-in on scroll -->
   <script>
