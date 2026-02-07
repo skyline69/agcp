@@ -1,0 +1,84 @@
+name: Update AUR Package
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-aur:
+    name: Update AUR package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get release version
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download release assets and compute checksums
+        id: hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/assets
+          v="${{ steps.version.outputs.version }}"
+
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
+            gh release download "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "agcp-v${v}-${target}.tar.gz" \
+              --dir /tmp/assets
+          done
+
+          # Compute SHA256 checksums
+          echo "sha256_x86_64=$(sha256sum /tmp/assets/agcp-v${v}-x86_64-unknown-linux-gnu.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "sha256_aarch64=$(sha256sum /tmp/assets/agcp-v${v}-aarch64-unknown-linux-gnu.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+          # Compute LICENSE checksum from repo
+          echo "sha256_license=$(sha256sum LICENSE | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Generate PKGBUILD
+        run: |
+          mkdir -p /tmp/aur-pkg
+
+          cat > /tmp/aur-pkg/PKGBUILD << 'EOF'
+          # Maintainer: skyline69 <skyline@noreply.codeberg.org>
+          pkgname=agcp-bin
+          pkgver=${{ steps.version.outputs.version }}
+          pkgrel=1
+          pkgdesc="Lightweight Rust proxy translating Anthropic Claude API to Google Cloud Code API"
+          arch=('x86_64' 'aarch64')
+          url="https://github.com/skyline69/agcp"
+          license=('MIT')
+          provides=('agcp')
+          conflicts=('agcp')
+
+          source_x86_64=("${url}/releases/download/v${pkgver}/agcp-v${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
+          source_aarch64=("${url}/releases/download/v${pkgver}/agcp-v${pkgver}-aarch64-unknown-linux-gnu.tar.gz")
+          source=("LICENSE-${pkgver}::${url}/raw/v${pkgver}/LICENSE")
+
+          sha256sums=('${{ steps.hashes.outputs.sha256_license }}')
+          sha256sums_x86_64=('${{ steps.hashes.outputs.sha256_x86_64 }}')
+          sha256sums_aarch64=('${{ steps.hashes.outputs.sha256_aarch64 }}')
+
+          package() {
+              install -Dm755 agcp "${pkgdir}/usr/bin/agcp"
+              install -Dm644 "LICENSE-${pkgver}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+          }
+          EOF
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' /tmp/aur-pkg/PKGBUILD
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: agcp-bin
+          pkgbuild: /tmp/aur-pkg/PKGBUILD
+          commit_username: skyline69
+          commit_email: skyline@noreply.codeberg.org
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "agcp ${{ steps.version.outputs.version }}"

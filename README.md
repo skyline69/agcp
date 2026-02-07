@@ -98,6 +98,18 @@ EOF
 sudo dnf install agcp
 ```
 
+### AUR (Arch Linux)
+
+```bash
+# With an AUR helper (e.g. yay, paru)
+yay -S agcp-bin
+
+# Or manually
+git clone https://aur.archlinux.org/agcp-bin.git
+cd agcp-bin
+makepkg -si
+```
+
 ### Nix
 
 ```bash
