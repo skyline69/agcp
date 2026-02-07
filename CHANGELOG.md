@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
 
 - Update changelog for v1.0.1 ([cc0ebfa](https://github.com/skyline69/agcp/commit/cc0ebfa3cef52fbe20a40ef6f5939a3eecb8cade)) — github-actions[bot]
 - Update changelog for v1.0.1 ([04b0ff7](https://github.com/skyline69/agcp/commit/04b0ff7e188116f1eb4181b8ddb5557907e3ae3c)) — github-actions[bot]
+- Update changelog for v1.0.1 ([06aafa5](https://github.com/skyline69/agcp/commit/06aafa551f350ec4e068b8673c634b4e0bca08e3)) — github-actions[bot]
 
 
 ### Miscellaneous
