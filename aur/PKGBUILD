@@ -1,6 +1,6 @@
 # Maintainer: skyline69 <skyline@noreply.codeberg.org>
 pkgname=agcp-bin
-pkgver=1.0.0
+pkgver=1.0.1
 pkgrel=1
 pkgdesc="Lightweight Rust proxy translating Anthropic Claude API to Google Cloud Code API"
 arch=('x86_64' 'aarch64')

@@ -14,7 +14,9 @@ mod cloudcode;
 mod format;
 
 use std::env;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(unix)]
+use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -1140,6 +1142,7 @@ fn try_acquire_lock() -> Option<std::fs::File> {
     }
 }
 
+#[cfg(unix)]
 fn write_pid(pid: u32) {
     let pid_path = get_pid_path();
     if let Some(parent) = pid_path.parent() {
