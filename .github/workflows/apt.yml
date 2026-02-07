@@ -1,0 +1,98 @@
+name: Update APT Repository
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-apt:
+    name: Update APT repository
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get release version
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download .deb assets from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/debs
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "*.deb" \
+            --dir /tmp/debs
+          ls -la /tmp/debs/
+
+      - name: Checkout APT repo
+        uses: actions/checkout@v4
+        with:
+          repository: skyline69/apt
+          token: ${{ secrets.APT_REPO_TOKEN }}
+          path: apt-repo
+          ref: gh-pages
+
+      - name: Import GPG key
+        run: |
+          echo "${{ secrets.APT_GPG_PRIVATE_KEY }}" | gpg --batch --import
+
+      - name: Update APT repository
+        run: |
+          cd apt-repo
+
+          # Create pool directory and copy debs
+          mkdir -p pool/main
+          cp /tmp/debs/*.deb pool/main/
+
+          # Generate Packages index for each architecture
+          for arch in amd64 arm64; do
+            mkdir -p dists/stable/main/binary-${arch}
+            dpkg-scanpackages --arch ${arch} pool/main > dists/stable/main/binary-${arch}/Packages
+            gzip -9c dists/stable/main/binary-${arch}/Packages > dists/stable/main/binary-${arch}/Packages.gz
+          done
+
+          # Generate Release file
+          cd dists/stable
+          cat > Release << EOF
+          Origin: skyline69
+          Label: AGCP
+          Suite: stable
+          Codename: stable
+          Architectures: amd64 arm64
+          Components: main
+          Description: APT repository for AGCP
+          EOF
+          sed -i 's/^          //' Release
+
+          # Add checksums
+          {
+            echo "MD5Sum:"
+            find main -type f | while read f; do
+              echo " $(md5sum "$f" | awk '{print $1}') $(wc -c < "$f") $f"
+            done
+            echo "SHA256:"
+            find main -type f | while read f; do
+              echo " $(sha256sum "$f" | awk '{print $1}') $(wc -c < "$f") $f"
+            done
+          } >> Release
+
+          # Sign the Release file
+          gpg --batch --yes --armor --detach-sign --output Release.gpg Release
+          gpg --batch --yes --armor --clearsign --output InRelease Release
+
+          cd ../..
+
+          # Export public key
+          gpg --batch --armor --export skyline69 > public.key
+
+      - name: Commit and push
+        working-directory: apt-repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "agcp ${{ steps.version.outputs.version }}"
+          git push

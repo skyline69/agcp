@@ -69,6 +69,18 @@ brew tap skyline69/agcp
 brew install agcp
 ```
 
+### APT (Debian/Ubuntu)
+
+```bash
+# Add the GPG key and repository
+curl -fsSL https://skyline69.github.io/apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/agcp.gpg
+echo "deb [signed-by=/usr/share/keyrings/agcp.gpg] https://skyline69.github.io/apt stable main" | sudo tee /etc/apt/sources.list.d/agcp.list
+
+# Install
+sudo apt update
+sudo apt install agcp
+```
+
 ### From Source
 
 ```bash

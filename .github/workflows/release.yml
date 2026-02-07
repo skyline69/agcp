@@ -106,6 +106,36 @@ jobs:
         run: |
           Compress-Archive -Path "target/${{ matrix.target }}/release/agcp.exe" -DestinationPath "agcp-v${{ needs.changelog.outputs.version }}-${{ matrix.target }}.zip"
 
+      - name: Build .deb package
+        if: contains(matrix.target, 'linux')
+        run: |
+          case "${{ matrix.target }}" in
+            x86_64-*)  DEB_ARCH="amd64" ;;
+            aarch64-*) DEB_ARCH="arm64" ;;
+          esac
+          VERSION="${{ needs.changelog.outputs.version }}"
+          PKG_DIR="agcp_${VERSION}_${DEB_ARCH}"
+          mkdir -p "${PKG_DIR}/DEBIAN"
+          mkdir -p "${PKG_DIR}/usr/bin"
+          cp "target/${{ matrix.target }}/release/agcp" "${PKG_DIR}/usr/bin/agcp"
+          chmod 755 "${PKG_DIR}/usr/bin/agcp"
+          cat > "${PKG_DIR}/DEBIAN/control" << EOF
+          Package: agcp
+          Version: ${VERSION}
+          Architecture: ${DEB_ARCH}
+          Maintainer: skyline69 <skyline@noreply.codeberg.org>
+          Description: Lightweight Rust proxy translating Anthropic Claude API to Google Cloud Code API
+           AGCP enables Claude and Gemini models through a single Anthropic-compatible endpoint.
+          Homepage: https://github.com/skyline69/agcp
+          License: MIT
+          Section: utils
+          Priority: optional
+          EOF
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' "${PKG_DIR}/DEBIAN/control"
+          dpkg-deb --build --root-owner-group "${PKG_DIR}"
+          mv "${PKG_DIR}.deb" "agcp_${VERSION}_${DEB_ARCH}.deb"
+
       - name: Upload artifact (Unix)
         if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
@@ -120,6 +150,14 @@ jobs:
         with:
           name: agcp-v${{ needs.changelog.outputs.version }}-${{ matrix.target }}.zip
           path: agcp-v${{ needs.changelog.outputs.version }}-${{ matrix.target }}.zip
+          if-no-files-found: error
+
+      - name: Upload .deb artifact
+        if: contains(matrix.target, 'linux')
+        uses: actions/upload-artifact@v4
+        with:
+          name: agcp-deb-${{ matrix.target }}
+          path: agcp_*.deb
           if-no-files-found: error
 
   release:
@@ -149,5 +187,6 @@ jobs:
           files: |
             artifacts/agcp-v${{ needs.changelog.outputs.version }}-*.tar.gz
             artifacts/agcp-v${{ needs.changelog.outputs.version }}-*.zip
+            artifacts/agcp_*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
