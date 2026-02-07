@@ -63,7 +63,7 @@
 
 @layer components {
   .install-tab {
-    cursor: pointer;
+    cursor: pointer !important;
   }
 
   .cmd-prompt::before {
@@ -71,23 +71,30 @@
     color: var(--color-green);
     user-select: none;
     -webkit-user-select: none;
+    pointer-events: none;
   }
 
   .terminal-block {
     position: relative;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
   }
 
   .copy-btn {
     position: absolute;
-    top: 0.75rem;
-    right: 0.75rem;
-    cursor: pointer;
+    top: 0.5rem;
+    right: 0.5rem;
+    z-index: 10;
+    cursor: pointer !important;
     padding: 0.375rem;
     border-radius: 0.25rem;
     color: #555;
     background: transparent;
     border: 1px solid transparent;
     transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .copy-btn:hover {
@@ -98,5 +105,11 @@
 
   .copy-btn.copied {
     color: var(--color-green);
+  }
+
+  .copy-btn svg {
+    display: inline-block;
+    width: 1rem;
+    height: 1rem;
   }
 }
