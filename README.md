@@ -62,6 +62,13 @@ cargo build --release
 
 ## Installation
 
+### Homebrew (macOS/Linux)
+
+```bash
+brew tap skyline69/agcp
+brew install agcp
+```
+
 ### From Source
 
 ```bash
