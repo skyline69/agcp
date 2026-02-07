@@ -12,6 +12,7 @@ All notable changes to this project will be documented in this file.
 - Cursor pointer, dollar sign prompt, and copy button visibility ([246a7fd](https://github.com/skyline69/agcp/commit/246a7fd757871ef792feb6efd1e07ea48c12ecd4)) — Ö. Efe D.
 - Gate unix-only imports and functions with cfg(unix) for Windows compatibility ([27f62f0](https://github.com/skyline69/agcp/commit/27f62f0b93fb3f77a71a135aa103950cecc39579)) — Ö. Efe D.
 - Remove redundant mv in deb build step ([ce7d052](https://github.com/skyline69/agcp/commit/ce7d052279b5c09cd7fd416fe5a4da5942e5b42e)) — Ö. Efe D.
+- Use --unreleased for release changelog generation ([271289f](https://github.com/skyline69/agcp/commit/271289ff5a5e98aff348620c672fed93c427610a)) — Ö. Efe D.
 
 
 ### Documentation
@@ -23,6 +24,7 @@ All notable changes to this project will be documented in this file.
 - Add copy buttons, cursor pointer, and unselectable prompt to terminal blocks ([a217b63](https://github.com/skyline69/agcp/commit/a217b634dcfd8b2e7004c41ef38d3faa0c18f2dd)) — Ö. Efe D.
 - Add shimmer skeleton loader for lazy-loaded images ([c41d3fe](https://github.com/skyline69/agcp/commit/c41d3fe5247306029b211f248f26020ac0c2ed6c)) — Ö. Efe D.
 - Fade scroll arrow on scroll down ([f42adde](https://github.com/skyline69/agcp/commit/f42adde30a86e886a9d4c9224642a2620bda5fe6)) — Ö. Efe D.
+- Update changelog for v1.0.1 ([cc0ebfa](https://github.com/skyline69/agcp/commit/cc0ebfa3cef52fbe20a40ef6f5939a3eecb8cade)) — github-actions[bot]
 
 
 ### Features
