@@ -43,9 +43,9 @@ jobs:
 
       - name: Generate PKGBUILD
         run: |
-          mkdir -p /tmp/aur-pkg
+          mkdir -p aur-pkg
 
-          cat > /tmp/aur-pkg/PKGBUILD << 'EOF'
+          cat > aur-pkg/PKGBUILD << 'EOF'
           # Maintainer: skyline69 <skyline@noreply.codeberg.org>
           pkgname=agcp-bin
           pkgver=${{ steps.version.outputs.version }}
@@ -71,13 +71,13 @@ jobs:
           }
           EOF
           # Remove leading whitespace from heredoc
-          sed -i 's/^          //' /tmp/aur-pkg/PKGBUILD
+          sed -i 's/^          //' aur-pkg/PKGBUILD
 
       - name: Publish to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
         with:
           pkgname: agcp-bin
-          pkgbuild: /tmp/aur-pkg/PKGBUILD
+          pkgbuild: aur-pkg/PKGBUILD
           commit_username: skyline69
           commit_email: skyline@noreply.codeberg.org
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
