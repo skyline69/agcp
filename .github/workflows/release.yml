@@ -33,7 +33,7 @@ jobs:
         id: cliff
         uses: orhun/git-cliff-action@v4
         with:
-          args: --latest --strip header
+          args: --unreleased --strip header --tag v${{ steps.version.outputs.version }}
         env:
           GITHUB_REPO: ${{ github.repository }}
 
