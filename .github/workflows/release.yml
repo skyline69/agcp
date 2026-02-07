@@ -136,6 +136,50 @@ jobs:
           dpkg-deb --build --root-owner-group "${PKG_DIR}"
           mv "${PKG_DIR}.deb" "agcp_${VERSION}_${DEB_ARCH}.deb"
 
+      - name: Build .rpm package
+        if: contains(matrix.target, 'linux')
+        run: |
+          sudo apt-get update && sudo apt-get install -y rpm
+          case "${{ matrix.target }}" in
+            x86_64-*)  RPM_ARCH="x86_64" ;;
+            aarch64-*) RPM_ARCH="aarch64" ;;
+          esac
+          VERSION="${{ needs.changelog.outputs.version }}"
+          mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+          # Create tarball for rpmbuild
+          mkdir -p "agcp-${VERSION}"
+          cp "target/${{ matrix.target }}/release/agcp" "agcp-${VERSION}/"
+          tar czf "rpmbuild/SOURCES/agcp-${VERSION}.tar.gz" "agcp-${VERSION}"
+          cat > rpmbuild/SPECS/agcp.spec << 'SPEC'
+          Name:           agcp
+          Version:        %{_version}
+          Release:        1
+          Summary:        Lightweight Rust proxy translating Anthropic Claude API to Google Cloud Code API
+          License:        MIT
+          URL:            https://github.com/skyline69/agcp
+          Source0:        agcp-%{_version}.tar.gz
+
+          %description
+          AGCP enables Claude and Gemini models through a single Anthropic-compatible endpoint.
+
+          %prep
+          %setup -q
+
+          %install
+          mkdir -p %{buildroot}/usr/bin
+          cp agcp %{buildroot}/usr/bin/agcp
+          chmod 755 %{buildroot}/usr/bin/agcp
+
+          %files
+          /usr/bin/agcp
+          SPEC
+          sed -i 's/^          //' rpmbuild/SPECS/agcp.spec
+          rpmbuild --define "_topdir $(pwd)/rpmbuild" \
+                   --define "_version ${VERSION}" \
+                   --target "${RPM_ARCH}" \
+                   -bb rpmbuild/SPECS/agcp.spec
+          cp rpmbuild/RPMS/${RPM_ARCH}/*.rpm "agcp-${VERSION}-1.${RPM_ARCH}.rpm"
+
       - name: Upload artifact (Unix)
         if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
@@ -158,6 +202,14 @@ jobs:
         with:
           name: agcp-deb-${{ matrix.target }}
           path: agcp_*.deb
+          if-no-files-found: error
+
+      - name: Upload .rpm artifact
+        if: contains(matrix.target, 'linux')
+        uses: actions/upload-artifact@v4
+        with:
+          name: agcp-rpm-${{ matrix.target }}
+          path: agcp-*.rpm
           if-no-files-found: error
 
   release:
@@ -188,5 +240,6 @@ jobs:
             artifacts/agcp-v${{ needs.changelog.outputs.version }}-*.tar.gz
             artifacts/agcp-v${{ needs.changelog.outputs.version }}-*.zip
             artifacts/agcp_*.deb
+            artifacts/agcp-*.rpm
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -81,6 +81,33 @@ sudo apt update
 sudo apt install agcp
 ```
 
+### DNF (Fedora/RHEL)
+
+```bash
+# Add the repository
+sudo tee /etc/yum.repos.d/agcp.repo << 'EOF'
+[agcp]
+name=AGCP
+baseurl=https://dasguney.com/rpm/packages
+enabled=1
+gpgcheck=1
+gpgkey=https://dasguney.com/rpm/public.key
+EOF
+
+# Install
+sudo dnf install agcp
+```
+
+### Nix
+
+```bash
+# Run directly
+nix run github:skyline69/agcp
+
+# Or install into profile
+nix profile install github:skyline69/agcp
+```
+
 ### From Source
 
 ```bash
