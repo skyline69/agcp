@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://crates.io/crates/agcp"><img src="https://img.shields.io/crates/v/agcp.svg" alt="Crates.io"></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/rust-1.93+-orange.svg" alt="Rust"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
 </p>
