@@ -28,7 +28,7 @@
         </a>
       </div>
     </div>
-    <div class="absolute bottom-8 animate-bounce text-gray-600">
+    <div id="scroll-arrow" class="absolute bottom-8 animate-bounce text-gray-600" style="transition:opacity 0.4s ease">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path></svg>
     </div>
   </section>
@@ -453,6 +453,23 @@
         }, { once: true });
       }
     });
+  </script>
+
+  <!-- Scroll arrow fade -->
+  <script>
+    (() => {
+      const arrow = document.getElementById('scroll-arrow');
+      let ticking = false;
+      window.addEventListener('scroll', () => {
+        if (!ticking) {
+          requestAnimationFrame(() => {
+            arrow.style.opacity = window.scrollY > 80 ? '0' : '1';
+            ticking = false;
+          });
+          ticking = true;
+        }
+      }, { passive: true });
+    })();
   </script>
 
 </body>
