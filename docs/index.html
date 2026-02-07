@@ -101,8 +101,8 @@
             <span class="bg-surface border border-border rounded px-2 py-1">q <span class="text-gray-500">quit</span></span>
           </div>
         </div>
-        <div class="rounded-lg overflow-hidden border border-border shadow-[0_0_40px_rgba(0,229,255,0.05)]">
-          <img src="images/demo-1.png" alt="AGCP Overview — real-time request monitoring" class="w-full select-none pointer-events-none" draggable="false" loading="lazy">
+        <div class="rounded-lg overflow-hidden border border-border shadow-[0_0_40px_rgba(0,229,255,0.05)] img-skeleton" style="aspect-ratio:16/9">
+          <img src="images/demo-1.png" alt="AGCP Overview — real-time request monitoring" class="w-full h-full object-cover select-none pointer-events-none" draggable="false" loading="lazy">
         </div>
       </div>
 
@@ -118,8 +118,8 @@
             <span class="bg-surface border border-border rounded px-2 py-1">? <span class="text-gray-500">help</span></span>
           </div>
         </div>
-        <div class="rounded-lg overflow-hidden border border-border shadow-[0_0_40px_rgba(0,229,255,0.05)]">
-          <img src="images/demo-2.png" alt="AGCP Quota — per-model usage with donut charts" class="w-full select-none pointer-events-none" draggable="false" loading="lazy">
+        <div class="rounded-lg overflow-hidden border border-border shadow-[0_0_40px_rgba(0,229,255,0.05)] img-skeleton" style="aspect-ratio:16/9">
+          <img src="images/demo-2.png" alt="AGCP Quota — per-model usage with donut charts" class="w-full h-full object-cover select-none pointer-events-none" draggable="false" loading="lazy">
         </div>
       </div>
 
@@ -131,8 +131,8 @@
             <p class="text-gray-400 text-sm">Version info, animated rainbow logo, and clickable GitHub link.</p>
           </div>
         </div>
-        <div class="rounded-lg overflow-hidden border border-border shadow-[0_0_40px_rgba(0,229,255,0.05)]">
-          <img src="images/demo-3.png" alt="AGCP About page" class="w-full select-none pointer-events-none" draggable="false" loading="lazy">
+        <div class="rounded-lg overflow-hidden border border-border shadow-[0_0_40px_rgba(0,229,255,0.05)] img-skeleton" style="aspect-ratio:16/9">
+          <img src="images/demo-3.png" alt="AGCP About page" class="w-full h-full object-cover select-none pointer-events-none" draggable="false" loading="lazy">
         </div>
       </div>
     </div>
@@ -437,6 +437,22 @@
       });
     }, { threshold: 0.1 });
     document.querySelectorAll('section').forEach(s => obs.observe(s));
+  </script>
+
+  <!-- Image skeleton loaders -->
+  <script>
+    document.querySelectorAll('.img-skeleton img').forEach(img => {
+      if (img.complete && img.naturalWidth > 0) {
+        img.closest('.img-skeleton').classList.add('loaded');
+      } else {
+        img.addEventListener('load', () => {
+          img.closest('.img-skeleton').classList.add('loaded');
+        }, { once: true });
+        img.addEventListener('error', () => {
+          img.closest('.img-skeleton').classList.add('loaded');
+        }, { once: true });
+      }
+    });
   </script>
 
 </body>

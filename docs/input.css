@@ -112,4 +112,46 @@
     width: 1rem;
     height: 1rem;
   }
+
+  .img-skeleton {
+    position: relative;
+    background: var(--color-surface);
+  }
+
+  .img-skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.03) 40%,
+      rgba(255, 255, 255, 0.06) 50%,
+      rgba(255, 255, 255, 0.03) 60%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.8s ease-in-out infinite;
+    z-index: 1;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+  }
+
+  .img-skeleton.loaded::after {
+    opacity: 0;
+  }
+
+  .img-skeleton img {
+    opacity: 0;
+    transition: opacity 0.3s ease;
+  }
+
+  .img-skeleton.loaded img {
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
