@@ -186,16 +186,19 @@
 
       <!-- Homebrew -->
       <div class="install-panel" data-panel="brew">
-        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden terminal-block">
           <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
             <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
             <span class="text-gray-600 text-xs ml-2">terminal</span>
           </div>
+          <button class="copy-btn" aria-label="Copy commands">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
           <div class="p-6 text-sm leading-loose">
-            <p><span class="text-green">$</span> <span class="text-gray-300">brew tap skyline69/agcp</span></p>
-            <p><span class="text-green">$</span> <span class="text-gray-300">brew install agcp</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">brew tap skyline69/agcp</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">brew install agcp</span></p>
           </div>
         </div>
         <p class="text-gray-500 text-xs mt-4 text-center">macOS and Linux</p>
@@ -203,19 +206,22 @@
 
       <!-- APT -->
       <div class="install-panel" data-panel="apt">
-        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden terminal-block">
           <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
             <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
             <span class="text-gray-600 text-xs ml-2">terminal</span>
           </div>
+          <button class="copy-btn" aria-label="Copy commands">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
           <div class="p-6 text-sm leading-loose">
             <p class="text-gray-600"># Add the GPG key and repository</p>
-            <p><span class="text-green">$</span> <span class="text-gray-300">curl -fsSL https://dasguney.com/apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/agcp.gpg</span></p>
-            <p><span class="text-green">$</span> <span class="text-gray-300">echo "deb [signed-by=/usr/share/keyrings/agcp.gpg] https://dasguney.com/apt stable main" | sudo tee /etc/apt/sources.list.d/agcp.list</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">curl -fsSL https://dasguney.com/apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/agcp.gpg</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">echo "deb [signed-by=/usr/share/keyrings/agcp.gpg] https://dasguney.com/apt stable main" | sudo tee /etc/apt/sources.list.d/agcp.list</span></p>
             <p class="text-gray-600 mt-4"># Install</p>
-            <p><span class="text-green">$</span> <span class="text-gray-300">sudo apt update && sudo apt install agcp</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">sudo apt update && sudo apt install agcp</span></p>
           </div>
         </div>
         <p class="text-gray-500 text-xs mt-4 text-center">Debian, Ubuntu, and derivatives</p>
@@ -223,16 +229,19 @@
 
       <!-- DNF -->
       <div class="install-panel" data-panel="dnf">
-        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden terminal-block">
           <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
             <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
             <span class="text-gray-600 text-xs ml-2">terminal</span>
           </div>
+          <button class="copy-btn" aria-label="Copy commands">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
           <div class="p-6 text-sm leading-loose">
             <p class="text-gray-600"># Add the repository</p>
-            <p><span class="text-green">$</span> <span class="text-gray-300">sudo tee /etc/yum.repos.d/agcp.repo << 'EOF'</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">sudo tee /etc/yum.repos.d/agcp.repo << 'EOF'</span></p>
             <p class="text-gray-400 pl-4">[agcp]</p>
             <p class="text-gray-400 pl-4">name=AGCP</p>
             <p class="text-gray-400 pl-4">baseurl=https://dasguney.com/rpm/packages</p>
@@ -241,7 +250,7 @@
             <p class="text-gray-400 pl-4">gpgkey=https://dasguney.com/rpm/public.key</p>
             <p><span class="text-gray-300">EOF</span></p>
             <p class="text-gray-600 mt-4"># Install</p>
-            <p><span class="text-green">$</span> <span class="text-gray-300">sudo dnf install agcp</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">sudo dnf install agcp</span></p>
           </div>
         </div>
         <p class="text-gray-500 text-xs mt-4 text-center">Fedora, RHEL, CentOS, and derivatives</p>
@@ -249,18 +258,21 @@
 
       <!-- Nix -->
       <div class="install-panel" data-panel="nix">
-        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden terminal-block">
           <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
             <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
             <span class="text-gray-600 text-xs ml-2">terminal</span>
           </div>
+          <button class="copy-btn" aria-label="Copy commands">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
           <div class="p-6 text-sm leading-loose">
             <p class="text-gray-600"># Run directly</p>
-            <p><span class="text-green">$</span> <span class="text-gray-300">nix run github:skyline69/agcp</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">nix run github:skyline69/agcp</span></p>
             <p class="text-gray-600 mt-4"># Or install into profile</p>
-            <p><span class="text-green">$</span> <span class="text-gray-300">nix profile install github:skyline69/agcp</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">nix profile install github:skyline69/agcp</span></p>
           </div>
         </div>
         <p class="text-gray-500 text-xs mt-4 text-center">NixOS and any system with Nix</p>
@@ -268,15 +280,18 @@
 
       <!-- Cargo -->
       <div class="install-panel" data-panel="cargo">
-        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden terminal-block">
           <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
             <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
             <span class="text-gray-600 text-xs ml-2">terminal</span>
           </div>
+          <button class="copy-btn" aria-label="Copy commands">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
           <div class="p-6 text-sm leading-loose">
-            <p><span class="text-green">$</span> <span class="text-gray-300">cargo install agcp</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">cargo install agcp</span></p>
           </div>
         </div>
         <p class="text-gray-500 text-xs mt-4 text-center">Any platform with Rust installed</p>
@@ -284,17 +299,20 @@
 
       <!-- Source -->
       <div class="install-panel" data-panel="source">
-        <div class="bg-surface border border-border rounded-lg overflow-hidden">
+        <div class="bg-surface border border-border rounded-lg overflow-hidden terminal-block">
           <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
             <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
             <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
             <span class="text-gray-600 text-xs ml-2">terminal</span>
           </div>
+          <button class="copy-btn" aria-label="Copy commands">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          </button>
           <div class="p-6 text-sm leading-loose">
-            <p><span class="text-green">$</span> <span class="text-gray-300">git clone https://github.com/skyline69/agcp</span></p>
-            <p><span class="text-green">$</span> <span class="text-gray-300">cd agcp && cargo build --release</span></p>
-            <p><span class="text-green">$</span> <span class="text-gray-300">cp target/release/agcp ~/.local/bin/</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">git clone https://github.com/skyline69/agcp</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">cd agcp && cargo build --release</span></p>
+            <p class="cmd-prompt"><span class="text-gray-300">cp target/release/agcp ~/.local/bin/</span></p>
           </div>
         </div>
         <p class="text-gray-500 text-xs mt-4 text-center">Build from source with Cargo</p>
@@ -305,17 +323,20 @@
     <!-- Post-install quick start -->
     <div class="mt-12">
       <h3 class="text-center text-base font-bold text-white mb-6">Then get started</h3>
-      <div class="bg-surface border border-border rounded-lg overflow-hidden">
+      <div class="bg-surface border border-border rounded-lg overflow-hidden terminal-block">
         <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
           <span class="text-gray-600 text-xs">setup</span>
         </div>
+        <button class="copy-btn" aria-label="Copy commands">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+        </button>
         <div class="p-6 text-sm leading-loose">
           <p class="text-gray-600"># Authenticate with Google</p>
-          <p><span class="text-green">$</span> <span class="text-gray-300">agcp login</span></p>
+          <p class="cmd-prompt"><span class="text-gray-300">agcp login</span></p>
           <p class="text-gray-600 mt-4"># Start the proxy</p>
-          <p><span class="text-green">$</span> <span class="text-gray-300">agcp</span></p>
+          <p class="cmd-prompt"><span class="text-gray-300">agcp</span></p>
           <p class="text-gray-600 mt-4"># Configure your AI tool</p>
-          <p><span class="text-green">$</span> <span class="text-gray-300">agcp setup</span></p>
+          <p class="cmd-prompt"><span class="text-gray-300">agcp setup</span></p>
           <p class="text-gray-600 mt-2"># Supports: Claude Code, OpenCode, Cursor, Cline, Codex</p>
         </div>
       </div>
@@ -361,7 +382,7 @@
     </div>
   </footer>
 
-  <!-- Install tab switching -->
+  <!-- Install tab switching + copy buttons -->
   <script>
     document.querySelectorAll('.install-panel').forEach((p, i) => {
       if (i > 0) p.style.display = 'none';
@@ -377,6 +398,24 @@
         tab.classList.add('border-cyan/30', 'bg-cyan/10', 'text-cyan');
         document.querySelectorAll('.install-panel').forEach(p => p.style.display = 'none');
         document.querySelector(`.install-panel[data-panel="${target}"]`).style.display = 'block';
+      });
+    });
+
+    // Copy buttons
+    document.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const block = btn.closest('.terminal-block');
+        const commands = Array.from(block.querySelectorAll('.cmd-prompt'))
+          .map(p => p.textContent.trim())
+          .join('\n');
+        navigator.clipboard.writeText(commands).then(() => {
+          btn.classList.add('copied');
+          btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>';
+          setTimeout(() => {
+            btn.classList.remove('copied');
+            btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>';
+          }, 2000);
+        });
       });
     });
   </script>
