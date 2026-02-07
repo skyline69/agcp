@@ -134,7 +134,6 @@ jobs:
           # Remove leading whitespace from heredoc
           sed -i 's/^          //' "${PKG_DIR}/DEBIAN/control"
           dpkg-deb --build --root-owner-group "${PKG_DIR}"
-          mv "${PKG_DIR}.deb" "agcp_${VERSION}_${DEB_ARCH}.deb"
 
       - name: Build .rpm package
         if: contains(matrix.target, 'linux')
