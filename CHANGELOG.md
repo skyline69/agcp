@@ -2,73 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.0.0] - 2026-02-07
 
-Initial public release.
+## [v1.0.1] - 2026-02-07
 
-### Core Proxy
 
-- Anthropic Messages API translation to Google Cloud Code API
-- Streaming (SSE) and non-streaming request support
-- Thinking model support for both Claude and Gemini 3+
-- Thinking signature caching for streaming responses
-- Dual endpoint failover (daily-cloudcode / cloudcode)
-- Exponential backoff with up to 5 retries on rate limits
-- Configurable request timeout, concurrency limits, and rate limiting
+### Bug Fixes
 
-### Model Support
+- Read version from Cargo.toml in Nix flake ([c05e078](https://github.com/skyline69/agcp/commit/c05e078eaf876d52d9b36c7a4cdd745e52eff459)) — Ö. Efe D.
+- Cursor pointer, dollar sign prompt, and copy button visibility ([246a7fd](https://github.com/skyline69/agcp/commit/246a7fd757871ef792feb6efd1e07ea48c12ecd4)) — Ö. Efe D.
+- Gate unix-only imports and functions with cfg(unix) for Windows compatibility ([27f62f0](https://github.com/skyline69/agcp/commit/27f62f0b93fb3f77a71a135aa103950cecc39579)) — Ö. Efe D.
+- Remove redundant mv in deb build step ([ce7d052](https://github.com/skyline69/agcp/commit/ce7d052279b5c09cd7fd416fe5a4da5942e5b42e)) — Ö. Efe D.
 
-- **Claude**: opus-4-6-thinking, opus-4-5-thinking, sonnet-4-5, sonnet-4-5-thinking
-- **Gemini**: 2.5-flash, 2.5-flash-lite, 2.5-flash-thinking, 2.5-pro, 3-flash, 3-pro-high, 3-pro-image, 3-pro-low
-- Short aliases (`opus`, `sonnet`, `flash`, `pro`, `3-flash`, `3-pro`)
-- Model fallback chains on quota exhaustion
 
-### Multi-Account Management
+### Documentation
 
-- Google OAuth authentication (`agcp login`)
-- Multiple account support with automatic rotation
-- Three selection strategies: sticky, round-robin, hybrid
-- Per-account quota tracking and threshold-based deprioritization
+- Add crates.io badge to README ([fe3e80c](https://github.com/skyline69/agcp/commit/fe3e80c54a2a731abc033b1118dba01b4af65c4f)) — Ö. Efe D.
+- Add Homebrew install instructions to README ([fcc9c0a](https://github.com/skyline69/agcp/commit/fcc9c0af6fa574066d130d494df5ab18d8126f18)) — Ö. Efe D.
+- Use custom domain for APT repo URL ([00dc509](https://github.com/skyline69/agcp/commit/00dc5097dee179e3933d4156906adbf5637d2e02)) — Ö. Efe D.
+- Add tabbed installation section to website ([80bc0e8](https://github.com/skyline69/agcp/commit/80bc0e8013a8b5560466dec3cef7326e7f6ebeed)) — Ö. Efe D.
+- Add copy buttons, cursor pointer, and unselectable prompt to terminal blocks ([a217b63](https://github.com/skyline69/agcp/commit/a217b634dcfd8b2e7004c41ef38d3faa0c18f2dd)) — Ö. Efe D.
+- Add shimmer skeleton loader for lazy-loaded images ([c41d3fe](https://github.com/skyline69/agcp/commit/c41d3fe5247306029b211f248f26020ac0c2ed6c)) — Ö. Efe D.
+- Fade scroll arrow on scroll down ([f42adde](https://github.com/skyline69/agcp/commit/f42adde30a86e886a9d4c9224642a2620bda5fe6)) — Ö. Efe D.
 
-### Response Caching
 
-- LRU cache for non-streaming responses
-- Configurable TTL and max entries
-- Cache bypass via `X-No-Cache` header
-- Cache statistics endpoint
+### Features
 
-### API Compatibility
+- Initial release (v1.0.0) ([6a18062](https://github.com/skyline69/agcp/commit/6a180625a02ab3b58f91ccf79aaba4432b54f735)) — Ö. Efe D.
 
-- Anthropic Messages API (`POST /v1/messages`)
-- OpenAI Chat Completions API (`POST /v1/chat/completions`)
-- OpenAI Responses API
-- Model listing (`GET /v1/models`)
-- Health check and statistics endpoints
-- Compatible with Claude Code, OpenCode, Cursor, Cline, and Codex
 
-### Interactive TUI (`agcp tui`)
+### Miscellaneous
 
-- Real-time overview with request rate charts and response times
-- Syntax-highlighted log viewer with mouse scrolling
-- Account management with quota donut charts
-- Interactive config editor with save and restart
-- Animated rainbow logo and startup warnings
-
-### CLI
-
-- Background daemon mode with foreground option
-- `agcp setup` for interactive AI tool configuration
-- `agcp doctor` for diagnostic checks
-- `agcp quota`, `agcp stats`, `agcp test` commands
-- Shell completions for bash, zsh, and fish
-- `agcp upgrade` for self-update
-- `--network` flag for LAN access
-- Windows process management support
-
-### Configuration
-
-- TOML config at `~/.config/agcp/config.toml`
-- Server, logging, accounts, cache, and cloudcode sections
-- TOML syntax validation with helpful error messages
+- Add macOS and Windows to CI matrix ([3eddf3e](https://github.com/skyline69/agcp/commit/3eddf3e0fa7176fc50859fa598867011982c8567)) — Ö. Efe D.
+- Add Homebrew tap auto-update workflow and formula ([afeb61c](https://github.com/skyline69/agcp/commit/afeb61c6412c6f0cb974d3f5b5009f432332bd2a)) — Ö. Efe D.
+- Add APT repository support with .deb packaging ([057996b](https://github.com/skyline69/agcp/commit/057996b83d894748d7bedb64eb5cd80137426258)) — Ö. Efe D.
+- Add RPM repo support and Nix flake ([a29e511](https://github.com/skyline69/agcp/commit/a29e5110491b07495cc1fe166ba2974b8a06ca8b)) — Ö. Efe D.
+- Auto-update CHANGELOG.md on release ([849ece2](https://github.com/skyline69/agcp/commit/849ece2c1dfff86c90b1e625138d74c4529dc1b7)) — Ö. Efe D.
 
 <!-- generated by git-cliff -->
