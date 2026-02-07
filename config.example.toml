@@ -1,0 +1,66 @@
+# AGCP Configuration
+#
+# Copy this file to ~/.config/agcp/config.toml and customize as needed.
+# All fields are optional — defaults are shown below.
+
+[server]
+# Port to listen on
+port = 8080
+
+# Host/IP to bind to ("127.0.0.1" = localhost only, "0.0.0.0" = all interfaces)
+host = "127.0.0.1"
+
+# Optional API key to protect your proxy endpoints.
+# When set, clients must send this as a Bearer token or x-api-key header.
+# Can also be set via the API_KEY environment variable.
+# api_key = "your-secret-key"
+
+# Per-request timeout in seconds (covers the full round-trip to Cloud Code)
+request_timeout_secs = 300
+
+[logging]
+# Enable verbose debug logging
+debug = false
+
+# Log full request/response bodies (very verbose, useful for debugging)
+log_requests = false
+
+[accounts]
+# Account selection strategy:
+#   "sticky"     — reuse the same account until it hits quota limits
+#   "roundrobin" — rotate through accounts evenly (aliases: "round-robin", "rr")
+#   "hybrid"     — smart selection based on account health and quota (recommended)
+strategy = "hybrid"
+
+# Quota threshold (0.0–1.0). Accounts with remaining quota below this
+# fraction are deprioritized in hybrid/roundrobin strategies.
+quota_threshold = 0.1
+
+# Enable automatic model fallback when the requested model's quota is exhausted.
+# For example, if claude-opus-4-6-thinking is exhausted, fall back to an alternative.
+fallback = false
+
+[cache]
+# Enable response caching for non-streaming, non-thinking requests.
+# Identical requests return cached responses instantly, saving quota.
+enabled = true
+
+# How long cached responses remain valid (seconds)
+ttl_seconds = 300
+
+# Maximum number of responses to keep in cache (LRU eviction)
+max_entries = 100
+
+[cloudcode]
+# Timeout for individual Cloud Code API calls (seconds)
+timeout_secs = 120
+
+# Maximum retry attempts for failed/rate-limited requests (exponential backoff)
+max_retries = 5
+
+# Maximum number of concurrent requests sent to the Cloud Code API
+max_concurrent_requests = 1
+
+# Minimum interval between consecutive requests (milliseconds).
+# Helps avoid triggering rate limits on rapid successive calls.
+min_request_interval_ms = 500

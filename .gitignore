@@ -1,0 +1,31 @@
+# Build output
+/target
+
+# Legacy Node.js project
+antigravity-claude-proxy/
+
+# User credentials and config (contain OAuth refresh tokens, personal settings)
+accounts.json
+config.toml
+
+# Environment files
+.env
+.env.*
+
+# Log files
+*.log
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# AI agent working files
+docs/plans/
+.opencode/

@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 120" width="380" height="120">
+  <style>
+    text {
+      font-family: 'Menlo', 'DejaVu Sans Mono', 'Consolas', 'Liberation Mono', monospace;
+      font-size: 26px;
+      font-weight: bold;
+      dominant-baseline: text-before-edge;
+    }
+  </style>
+  <g transform="translate(30, 5)">
+    <!-- Row 0:  ▗▄▖  ▗▄▄▖ ▗▄▄▖▗▄▄▖  -->
+    <text x="16"  y="5" fill="#FF8700">▗</text>
+    <text x="32"  y="5" fill="#FFFF00">▄</text>
+    <text x="48"  y="5" fill="#00FF00">▖</text>
+    <text x="96"  y="5" fill="#FF00FF">▗</text>
+    <text x="112" y="5" fill="#FF0000">▄</text>
+    <text x="128" y="5" fill="#FF8700">▄</text>
+    <text x="144" y="5" fill="#FFFF00">▖</text>
+    <text x="176" y="5" fill="#00FFFF">▗</text>
+    <text x="192" y="5" fill="#0000FF">▄</text>
+    <text x="208" y="5" fill="#FF00FF">▄</text>
+    <text x="224" y="5" fill="#FF0000">▖</text>
+    <text x="240" y="5" fill="#FF8700">▗</text>
+    <text x="256" y="5" fill="#FFFF00">▄</text>
+    <text x="272" y="5" fill="#00FF00">▄</text>
+    <text x="288" y="5" fill="#00FFFF">▖</text>
+    <!-- Row 1: ▐▌ ▐▌▐▌   ▐▌   ▐▌ ▐▌ -->
+    <text x="0"   y="31" fill="#FFFF00">▐</text>
+    <text x="16"  y="31" fill="#00FF00">▌</text>
+    <text x="48"  y="31" fill="#0000FF">▐</text>
+    <text x="64"  y="31" fill="#FF00FF">▌</text>
+    <text x="80"  y="31" fill="#FF0000">▐</text>
+    <text x="96"  y="31" fill="#FF8700">▌</text>
+    <text x="160" y="31" fill="#0000FF">▐</text>
+    <text x="176" y="31" fill="#FF00FF">▌</text>
+    <text x="240" y="31" fill="#00FF00">▐</text>
+    <text x="256" y="31" fill="#00FFFF">▌</text>
+    <text x="288" y="31" fill="#FF00FF">▐</text>
+    <text x="304" y="31" fill="#FF0000">▌</text>
+    <!-- Row 2: ▐▛▀▜▌▐▌▝▜▌▐▌   ▐▛▀▘  -->
+    <text x="0"   y="57" fill="#00FFFF">▐</text>
+    <text x="16"  y="57" fill="#0000FF">▛</text>
+    <text x="32"  y="57" fill="#FF00FF">▀</text>
+    <text x="48"  y="57" fill="#FF0000">▜</text>
+    <text x="64"  y="57" fill="#FF8700">▌</text>
+    <text x="80"  y="57" fill="#FFFF00">▐</text>
+    <text x="96"  y="57" fill="#00FF00">▌</text>
+    <text x="112" y="57" fill="#00FFFF">▝</text>
+    <text x="128" y="57" fill="#0000FF">▜</text>
+    <text x="144" y="57" fill="#FF00FF">▌</text>
+    <text x="160" y="57" fill="#FF0000">▐</text>
+    <text x="176" y="57" fill="#FF8700">▌</text>
+    <text x="240" y="57" fill="#0000FF">▐</text>
+    <text x="256" y="57" fill="#FF00FF">▛</text>
+    <text x="272" y="57" fill="#FF0000">▀</text>
+    <text x="288" y="57" fill="#FF8700">▘</text>
+    <!-- Row 3: ▐▌ ▐▌▝▚▄▞▘▝▚▄▄▖▐▌    -->
+    <text x="0"   y="83" fill="#FF00FF">▐</text>
+    <text x="16"  y="83" fill="#FF0000">▌</text>
+    <text x="48"  y="83" fill="#FFFF00">▐</text>
+    <text x="64"  y="83" fill="#00FF00">▌</text>
+    <text x="80"  y="83" fill="#00FFFF">▝</text>
+    <text x="96"  y="83" fill="#0000FF">▚</text>
+    <text x="112" y="83" fill="#FF00FF">▄</text>
+    <text x="128" y="83" fill="#FF0000">▞</text>
+    <text x="144" y="83" fill="#FF8700">▘</text>
+    <text x="160" y="83" fill="#FFFF00">▝</text>
+    <text x="176" y="83" fill="#00FF00">▚</text>
+    <text x="192" y="83" fill="#00FFFF">▄</text>
+    <text x="208" y="83" fill="#0000FF">▄</text>
+    <text x="224" y="83" fill="#FF00FF">▖</text>
+    <text x="240" y="83" fill="#FF0000">▐</text>
+    <text x="256" y="83" fill="#FF8700">▌</text>
+  </g>
+</svg>

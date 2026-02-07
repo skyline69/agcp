@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-bg">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AGCP — Extremely Lightweight Antigravity-Claude-Proxy</title>
+  <meta name="description" content="A blazing-fast Rust proxy that translates Anthropic's Claude API to Google's Cloud Code API. Use Claude and Gemini models through a single endpoint.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="bg-bg text-gray-300 font-mono antialiased">
+
+  <!-- Hero -->
+  <section class="min-h-screen flex flex-col items-center justify-center px-6 text-center relative overflow-hidden">
+    <div class="absolute inset-0 bg-gradient-to-b from-cyan/5 via-transparent to-transparent pointer-events-none"></div>
+    <div class="relative z-10">
+      <img src="images/logo.svg" alt="AGCP" class="w-72 md:w-96 mx-auto mb-8 drop-shadow-[0_0_30px_rgba(0,229,255,0.15)] select-none pointer-events-none" draggable="false">
+      <p class="text-cyan text-sm md:text-base tracking-widest uppercase mb-4">Extremely Lightweight Antigravity-Claude-Proxy</p>
+      <p class="text-gray-400 max-w-2xl mx-auto text-sm md:text-base leading-relaxed mb-10">
+        A blazing-fast Rust proxy that translates Anthropic's Claude API to Google's Cloud Code API.
+        Use Claude and Gemini models through a single Anthropic-compatible endpoint.
+      </p>
+      <div class="flex flex-col sm:flex-row gap-4 justify-center">
+        <a href="#install" class="px-6 py-3 bg-cyan/10 border border-cyan/30 text-cyan rounded hover:bg-cyan/20 hover:border-cyan/50 transition-all text-sm">
+          Get Started
+        </a>
+        <a href="https://github.com/skyline69/agcp" class="px-6 py-3 bg-white/5 border border-white/10 text-gray-300 rounded hover:bg-white/10 hover:border-white/20 transition-all text-sm">
+          GitHub
+        </a>
+      </div>
+    </div>
+    <div class="absolute bottom-8 animate-bounce text-gray-600">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"></path></svg>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="max-w-5xl mx-auto px-6 py-24" id="features">
+    <h2 class="text-center text-xl md:text-2xl font-bold text-white mb-4">Features</h2>
+    <p class="text-center text-gray-500 text-sm mb-16">Everything you need to proxy Claude and Gemini models</p>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+      <div class="group p-8 bg-surface border border-border rounded-lg hover:border-cyan/20 transition-colors">
+        <svg class="w-8 h-8 text-cyan mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3M4.5 19.5h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15A2.25 2.25 0 002.25 6.75v10.5A2.25 2.25 0 004.5 19.5z"/></svg>
+        <h3 class="text-white text-base font-bold mb-3">API Compatible</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Works with Claude Code, OpenCode, Cursor, Cline, and any Anthropic API client. OpenAI-compatible endpoint included.</p>
+      </div>
+
+      <div class="group p-8 bg-surface border border-border rounded-lg hover:border-cyan/20 transition-colors">
+        <svg class="w-8 h-8 text-cyan mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"/></svg>
+        <h3 class="text-white text-base font-bold mb-3">Multiple Models</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Access Claude Opus, Sonnet, and Gemini Flash, Pro through a single endpoint. Short aliases like <code class="text-cyan/70">opus</code>, <code class="text-cyan/70">flash</code>, <code class="text-cyan/70">pro</code>.</p>
+      </div>
+
+      <div class="group p-8 bg-surface border border-border rounded-lg hover:border-cyan/20 transition-colors">
+        <svg class="w-8 h-8 text-cyan mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg>
+        <h3 class="text-white text-base font-bold mb-3">Multi-Account</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Rotate between multiple Google accounts with smart load balancing. Sticky, round-robin, or hybrid strategies.</p>
+      </div>
+
+      <div class="group p-8 bg-surface border border-border rounded-lg hover:border-cyan/20 transition-colors">
+        <svg class="w-8 h-8 text-cyan mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg>
+        <h3 class="text-white text-base font-bold mb-3">Response Caching</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">LRU cache for non-streaming responses. Configurable TTL, bypass with headers, reduces quota usage.</p>
+      </div>
+
+      <div class="group p-8 bg-surface border border-border rounded-lg hover:border-cyan/20 transition-colors">
+        <svg class="w-8 h-8 text-cyan mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 8.25V18a2.25 2.25 0 002.25 2.25h13.5A2.25 2.25 0 0021 18V8.25m-18 0V6a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 6v2.25m-18 0h18M5.25 6h.008v.008H5.25V6zM7.5 6h.008v.008H7.5V6zm2.25 0h.008v.008H9.75V6z"/><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 14.25h3m-3 3h6"/></svg>
+        <h3 class="text-white text-base font-bold mb-3">Interactive TUI</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Terminal UI with real-time charts, log viewer, config editor, and quota donut charts. Run <code class="text-cyan/70">agcp tui</code>.</p>
+      </div>
+
+      <div class="group p-8 bg-surface border border-border rounded-lg hover:border-cyan/20 transition-colors">
+        <svg class="w-8 h-8 text-cyan mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/></svg>
+        <h3 class="text-white text-base font-bold mb-3">Background Daemon</h3>
+        <p class="text-gray-400 text-sm leading-relaxed">Runs quietly in the background. Single ~5MB binary, minimal dependencies, written in Rust with async I/O.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Interactive TUI -->
+  <section class="max-w-5xl mx-auto px-6 py-24" id="tui">
+    <h2 class="text-center text-xl md:text-2xl font-bold text-white mb-4">Interactive TUI</h2>
+    <p class="text-center text-gray-500 text-sm mb-6">Monitor, configure, and manage everything from your terminal</p>
+    <div class="flex justify-center mb-16">
+      <div class="bg-surface border border-border rounded-lg px-5 py-3 text-sm">
+        <span class="text-green">$</span> <span class="text-gray-300">agcp tui</span>
+      </div>
+    </div>
+
+    <div class="space-y-16">
+      <!-- Overview -->
+      <div class="space-y-4">
+        <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-2 mb-2">
+          <div>
+            <h3 class="text-white text-base font-bold">Overview</h3>
+            <p class="text-gray-400 text-sm">Real-time request rate chart, response times, active accounts, and model usage breakdown.</p>
+          </div>
+          <div class="flex gap-3 text-xs text-gray-600 shrink-0">
+            <span class="bg-surface border border-border rounded px-2 py-1">Tab <span class="text-gray-500">switch views</span></span>
+            <span class="bg-surface border border-border rounded px-2 py-1">q <span class="text-gray-500">quit</span></span>
+          </div>
+        </div>
+        <div class="rounded-lg overflow-hidden border border-border shadow-[0_0_40px_rgba(0,229,255,0.05)]">
+          <img src="images/demo-1.png" alt="AGCP Overview — real-time request monitoring" class="w-full select-none pointer-events-none" draggable="false" loading="lazy">
+        </div>
+      </div>
+
+      <!-- Quota -->
+      <div class="space-y-4">
+        <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-2 mb-2">
+          <div>
+            <h3 class="text-white text-base font-bold">Quota</h3>
+            <p class="text-gray-400 text-sm">Per-model quota usage with donut charts and reset timers. Separate views for Claude and Gemini.</p>
+          </div>
+          <div class="flex gap-3 text-xs text-gray-600 shrink-0">
+            <span class="bg-surface border border-border rounded px-2 py-1">scroll <span class="text-gray-500">mouse wheel</span></span>
+            <span class="bg-surface border border-border rounded px-2 py-1">? <span class="text-gray-500">help</span></span>
+          </div>
+        </div>
+        <div class="rounded-lg overflow-hidden border border-border shadow-[0_0_40px_rgba(0,229,255,0.05)]">
+          <img src="images/demo-2.png" alt="AGCP Quota — per-model usage with donut charts" class="w-full select-none pointer-events-none" draggable="false" loading="lazy">
+        </div>
+      </div>
+
+      <!-- About -->
+      <div class="space-y-4">
+        <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-2 mb-2">
+          <div>
+            <h3 class="text-white text-base font-bold">About</h3>
+            <p class="text-gray-400 text-sm">Version info, animated rainbow logo, and clickable GitHub link.</p>
+          </div>
+        </div>
+        <div class="rounded-lg overflow-hidden border border-border shadow-[0_0_40px_rgba(0,229,255,0.05)]">
+          <img src="images/demo-3.png" alt="AGCP About page" class="w-full select-none pointer-events-none" draggable="false" loading="lazy">
+        </div>
+      </div>
+    </div>
+
+    <!-- All tabs -->
+    <div class="mt-16 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div class="bg-surface border border-border rounded-lg p-4 text-center">
+        <p class="text-white text-sm font-bold mb-1">Overview</p>
+        <p class="text-gray-500 text-xs">Live stats</p>
+      </div>
+      <div class="bg-surface border border-border rounded-lg p-4 text-center">
+        <p class="text-white text-sm font-bold mb-1">Logs</p>
+        <p class="text-gray-500 text-xs">Syntax-highlighted</p>
+      </div>
+      <div class="bg-surface border border-border rounded-lg p-4 text-center">
+        <p class="text-white text-sm font-bold mb-1">Accounts</p>
+        <p class="text-gray-500 text-xs">Manage & toggle</p>
+      </div>
+      <div class="bg-surface border border-border rounded-lg p-4 text-center">
+        <p class="text-white text-sm font-bold mb-1">Config</p>
+        <p class="text-gray-500 text-xs">Edit & restart</p>
+      </div>
+      <div class="bg-surface border border-border rounded-lg p-4 text-center">
+        <p class="text-white text-sm font-bold mb-1">Quota</p>
+        <p class="text-gray-500 text-xs">Donut charts</p>
+      </div>
+      <div class="bg-surface border border-border rounded-lg p-4 text-center">
+        <p class="text-white text-sm font-bold mb-1">About</p>
+        <p class="text-gray-500 text-xs">Version info</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Install -->
+  <section class="max-w-3xl mx-auto px-6 py-24" id="install">
+    <h2 class="text-center text-xl md:text-2xl font-bold text-white mb-4">Quick Start</h2>
+    <p class="text-center text-gray-500 text-sm mb-12">Up and running in under a minute</p>
+    <div class="bg-surface border border-border rounded-lg overflow-hidden">
+      <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
+        <div class="w-3 h-3 rounded-full bg-red-500/70"></div>
+        <div class="w-3 h-3 rounded-full bg-yellow-500/70"></div>
+        <div class="w-3 h-3 rounded-full bg-green-500/70"></div>
+        <span class="text-gray-600 text-xs ml-2">terminal</span>
+      </div>
+      <div class="p-6 text-sm leading-loose">
+        <p><span class="text-green">$</span> <span class="text-gray-300">git clone https://github.com/skyline69/agcp</span></p>
+        <p><span class="text-green">$</span> <span class="text-gray-300">cd agcp && cargo build --release</span></p>
+        <p class="text-gray-600 mt-4"># Authenticate with Google</p>
+        <p><span class="text-green">$</span> <span class="text-gray-300">./target/release/agcp login</span></p>
+        <p class="text-gray-600 mt-4"># Start the proxy</p>
+        <p><span class="text-green">$</span> <span class="text-gray-300">./target/release/agcp</span></p>
+        <p class="text-gray-600 mt-4"># Configure your AI tool to use</p>
+        <p class="text-cyan">http://127.0.0.1:8080</p>
+      </div>
+    </div>
+    <div class="mt-8 bg-surface border border-border rounded-lg overflow-hidden">
+      <div class="flex items-center gap-2 px-4 py-3 border-b border-border">
+        <span class="text-gray-600 text-xs">setup</span>
+      </div>
+      <div class="p-6 text-sm leading-loose">
+        <p><span class="text-green">$</span> <span class="text-gray-300">agcp setup</span></p>
+        <p class="text-gray-600 mt-2"># Select your AI tool from the interactive menu</p>
+        <p class="text-gray-600"># Supports: Claude Code, OpenCode, Cursor, Cline, Codex</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Models -->
+  <section class="max-w-3xl mx-auto px-6 py-24" id="models">
+    <h2 class="text-center text-xl md:text-2xl font-bold text-white mb-4">Supported Models</h2>
+    <p class="text-center text-gray-500 text-sm mb-12">Claude and Gemini through one endpoint</p>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div class="bg-surface border border-border rounded-lg p-8">
+        <h3 class="text-purple text-base font-bold mb-5">Claude</h3>
+        <ul class="space-y-3 text-sm">
+          <li class="flex justify-between"><span class="text-gray-300">claude-opus-4-6-thinking</span><span class="text-gray-600">opus</span></li>
+          <li class="flex justify-between"><span class="text-gray-300">claude-opus-4-5-thinking</span><span class="text-gray-600"></span></li>
+          <li class="flex justify-between"><span class="text-gray-300">claude-sonnet-4-5</span><span class="text-gray-600">sonnet</span></li>
+          <li class="flex justify-between"><span class="text-gray-300">claude-sonnet-4-5-thinking</span><span class="text-gray-600">sonnet-thinking</span></li>
+        </ul>
+      </div>
+      <div class="bg-surface border border-border rounded-lg p-8">
+        <h3 class="text-green text-base font-bold mb-5">Gemini</h3>
+        <ul class="space-y-3 text-sm">
+          <li class="flex justify-between"><span class="text-gray-300">gemini-2.5-flash</span><span class="text-gray-600">flash</span></li>
+          <li class="flex justify-between"><span class="text-gray-300">gemini-2.5-pro</span><span class="text-gray-600">pro</span></li>
+          <li class="flex justify-between"><span class="text-gray-300">gemini-3-flash</span><span class="text-gray-600">3-flash</span></li>
+          <li class="flex justify-between"><span class="text-gray-300">gemini-3-pro-high</span><span class="text-gray-600">3-pro</span></li>
+          <li class="flex justify-between"><span class="text-gray-300">gemini-2.5-flash-lite</span><span class="text-gray-600"></span></li>
+          <li class="flex justify-between"><span class="text-gray-300">gemini-2.5-flash-thinking</span><span class="text-gray-600"></span></li>
+          <li class="flex justify-between"><span class="text-gray-300">gemini-3-pro-image</span><span class="text-gray-600"></span></li>
+          <li class="flex justify-between"><span class="text-gray-300">gemini-3-pro-low</span><span class="text-gray-600"></span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="border-t border-border py-12 px-6">
+    <div class="max-w-5xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-gray-600">
+      <p>MIT License</p>
+      <p>Made with Rust</p>
+      <a href="https://github.com/skyline69/agcp" class="hover:text-gray-400 transition-colors">github.com/skyline69/agcp</a>
+    </div>
+  </footer>
+
+  <!-- Fade-in on scroll -->
+  <script>
+    document.querySelectorAll('section').forEach(s => {
+      s.style.opacity = '0';
+      s.style.transform = 'translateY(20px)';
+      s.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
+    });
+    const obs = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          e.target.style.opacity = '1';
+          e.target.style.transform = 'translateY(0)';
+          obs.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.1 });
+    document.querySelectorAll('section').forEach(s => obs.observe(s));
+  </script>
+
+</body>
+</html>

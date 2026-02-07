@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/JetBrainsMono-Bold.woff2') format('woff2');
+}
+
+@theme {
+  --font-mono: 'JetBrains Mono', monospace;
+  --color-bg: #08080f;
+  --color-surface: #10101a;
+  --color-border: #1a1a2e;
+  --color-cyan: #00e5ff;
+  --color-green: #00ff88;
+  --color-purple: #b388ff;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  ::selection {
+    background-color: rgba(0, 229, 255, 0.25);
+    color: #fff;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #08080f;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #1a1a2e;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #2a2a4e;
+  }
+
+  /* Firefox */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #1a1a2e #08080f;
+  }
+}
