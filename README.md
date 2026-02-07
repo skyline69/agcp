@@ -73,8 +73,8 @@ brew install agcp
 
 ```bash
 # Add the GPG key and repository
-curl -fsSL https://skyline69.github.io/apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/agcp.gpg
-echo "deb [signed-by=/usr/share/keyrings/agcp.gpg] https://skyline69.github.io/apt stable main" | sudo tee /etc/apt/sources.list.d/agcp.list
+curl -fsSL https://dasguney.com/apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/agcp.gpg
+echo "deb [signed-by=/usr/share/keyrings/agcp.gpg] https://dasguney.com/apt stable main" | sudo tee /etc/apt/sources.list.d/agcp.list
 
 # Install
 sudo apt update
