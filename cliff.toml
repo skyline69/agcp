@@ -37,6 +37,7 @@ filter_unconventional = true
 split_commits = false
 
 commit_parsers = [
+    { message = "^docs: update changelog", skip = true },
     { message = "^feat", group = "Features" },
     { message = "^fix", group = "Bug Fixes" },
     { message = "^perf", group = "Performance" },
