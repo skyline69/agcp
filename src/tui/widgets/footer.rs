@@ -26,7 +26,10 @@ impl Footer {
                 binds.insert(2, ("Enter", "Activate"));
             }
             Tab::Logs => {
-                // Logs-specific bindings could go here
+                binds.insert(2, ("c", "Clear"));
+                binds.insert(2, ("a", "Account"));
+                binds.insert(2, ("/", "Search"));
+                binds.insert(2, ("d/i/w/e", "Levels"));
             }
             Tab::Config => {
                 return Self::new(vec![

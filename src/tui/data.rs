@@ -34,6 +34,11 @@ static MODEL_USED_REGEX: LazyLock<Regex> =
 static DURATION_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"duration_ms=(\d+)").expect("valid regex"));
 
+/// Regex to extract account email from "Model used" log lines
+/// Format: "account=user@example.com"
+static ACCOUNT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"account=([^\s]+)").expect("valid regex"));
+
 /// Server status for display
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerStatus {
@@ -108,6 +113,8 @@ pub struct LogEntry {
     pub timestamp_secs: Option<u64>,
     /// Whether this is a request completion
     pub is_request: bool,
+    /// Account email extracted from "Model used" log lines
+    pub account_email: Option<String>,
 }
 
 impl LogEntry {
@@ -124,11 +131,18 @@ impl LogEntry {
             (None, false)
         };
 
+        // Extract account email from "Model used" lines
+        let account_email = ACCOUNT_REGEX
+            .captures(&clean_line)
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str().to_string());
+
         Self {
             line: clean_line,
             level,
             timestamp_secs,
             is_request,
+            account_email,
         }
     }
 }

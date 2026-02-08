@@ -262,11 +262,11 @@ fn generate_request_id() -> String {
 }
 
 /// Get access token and project ID using account selection strategy
-/// Returns (access_token, project_id, account_id)
+/// Returns (access_token, project_id, account_id, account_email)
 async fn get_account_credentials(
     state: &Arc<ServerState>,
     model: &str,
-) -> Result<(String, String, String), Error> {
+) -> Result<(String, String, String, String), Error> {
     let mut accounts = state.accounts.write().await;
 
     let account_id = accounts.select_account(model).ok_or_else(|| {
@@ -284,6 +284,7 @@ async fn get_account_credentials(
     let access_token = account.get_access_token(&state.http_client).await?;
     let project_id = account.project_id.clone().unwrap_or_default();
     let id = account.id.clone();
+    let email = account.email.clone();
 
     // Update last_used timestamp and consume a token
     account.last_used = std::time::SystemTime::now()
@@ -301,7 +302,7 @@ async fn get_account_credentials(
         "Using account credentials"
     );
 
-    Ok((access_token, project_id, id))
+    Ok((access_token, project_id, id, email))
 }
 
 /// Record request outcome for an account
@@ -344,6 +345,7 @@ async fn record_request_outcome(
 async fn track_request_outcome(
     state: &Arc<ServerState>,
     account_id: &str,
+    account_email: &str,
     model: &str,
     request_id: &str,
     result: &Result<Response<Full<Bytes>>, Error>,
@@ -353,6 +355,7 @@ async fn track_request_outcome(
             info!(
                 model = %model,
                 request_id = %request_id,
+                account = %account_email,
                 "Model used"
             );
             (true, None)
@@ -513,7 +516,8 @@ async fn execute_messages_request(
         None
     };
 
-    let (access_token, project_id, account_id) = get_account_credentials(state, model).await?;
+    let (access_token, project_id, account_id, account_email) =
+        get_account_credentials(state, model).await?;
 
     let cc_request = build_request(messages_request, &project_id);
     let request_body = serde_json::to_vec(&cc_request)?;
@@ -554,7 +558,15 @@ async fn execute_messages_request(
         .await
     };
 
-    track_request_outcome(state, &account_id, model, &cc_request.request_id, &result).await;
+    track_request_outcome(
+        state,
+        &account_id,
+        &account_email,
+        model,
+        &cc_request.request_id,
+        &result,
+    )
+    .await;
 
     result
 }
@@ -663,7 +675,8 @@ async fn execute_openai_request(
 
     log_if_enabled(request_id, "OpenAI request", &messages_request);
 
-    let (access_token, project_id, account_id) = get_account_credentials(state, model).await?;
+    let (access_token, project_id, account_id, account_email) =
+        get_account_credentials(state, model).await?;
 
     let cc_request = build_request(messages_request, &project_id);
     let request_body = serde_json::to_vec(&cc_request)?;
@@ -699,7 +712,15 @@ async fn execute_openai_request(
         .await
     };
 
-    track_request_outcome(state, &account_id, model, &cc_request.request_id, &result).await;
+    track_request_outcome(
+        state,
+        &account_id,
+        &account_email,
+        model,
+        &cc_request.request_id,
+        &result,
+    )
+    .await;
 
     result
 }
@@ -992,7 +1013,8 @@ async fn handle_responses(
 
     log_if_enabled(request_id, "Responses API request", &messages_request);
 
-    let (access_token, project_id, account_id) = get_account_credentials(&state, model).await?;
+    let (access_token, project_id, account_id, account_email) =
+        get_account_credentials(&state, model).await?;
 
     let cc_request = build_request(&messages_request, &project_id);
     let request_body = serde_json::to_vec(&cc_request)?;
@@ -1030,7 +1052,15 @@ async fn handle_responses(
         .await
     };
 
-    track_request_outcome(&state, &account_id, model, request_id, &result).await;
+    track_request_outcome(
+        &state,
+        &account_id,
+        &account_email,
+        model,
+        request_id,
+        &result,
+    )
+    .await;
 
     result
 }
@@ -1796,7 +1826,7 @@ async fn handle_account_limits(state: &Arc<ServerState>) -> Result<Response<Full
     let credentials = get_account_credentials(state, "claude-sonnet-4-5").await;
 
     let response = match credentials {
-        Ok((access_token, project_id, account_id)) => {
+        Ok((access_token, project_id, account_id, _account_email)) => {
             match fetch_model_quotas(&state.http_client, &access_token, Some(&project_id)).await {
                 Ok(quotas) => {
                     // Save quota data to the account for TUI display

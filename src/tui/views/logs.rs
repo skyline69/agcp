@@ -1,13 +1,13 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, Wrap,
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, Wrap,
 };
 
 use crate::tui::app::App;
 use crate::tui::data::LogLevel;
 use crate::tui::theme;
 
-/// Render the logs view with scrollbar
+/// Render the logs view with toolbar, search bar, and scrollbar
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .title(" Logs ")
@@ -20,65 +20,93 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Calculate toolbar height: 1 for filter bar + 1 for search bar (if active)
+    let toolbar_height: u16 = if app.log_search_active || !app.log_search_query.is_empty() {
+        2
+    } else {
+        1
+    };
+
+    // Split inner area into toolbar and log content
+    let toolbar_area = Rect {
+        height: toolbar_height,
+        ..inner
+    };
+    let content_area = Rect {
+        y: inner.y + toolbar_height,
+        height: inner.height.saturating_sub(toolbar_height),
+        ..inner
+    };
+
+    // Render the filter toolbar (stores hit-test rects in app)
+    render_toolbar(frame, toolbar_area, app);
+
     if app.logs.is_empty() {
         let empty_msg = Text::from("No logs yet. Start the server with 'agcp'")
             .style(theme::dim())
             .centered();
-        frame.render_widget(empty_msg, inner);
+        frame.render_widget(empty_msg, content_area);
         return;
     }
 
-    // Only highlight the visible window of log entries (not all 1000+)
-    let visible_height = inner.height as usize;
-    let total_lines = app.logs.len();
+    // Determine which entries to display
+    let has_filter = app.has_active_log_filter();
+    let total_lines = if has_filter {
+        app.log_filtered_indices.len()
+    } else {
+        app.logs.len()
+    };
+
+    let visible_height = content_area.height as usize;
 
     // Calculate scroll offset based on app.log_scroll (0 = bottom/newest)
-    // log_scroll is how many lines we've scrolled UP from the bottom
     let scroll_offset = total_lines
         .saturating_sub(visible_height)
         .saturating_sub(app.log_scroll);
 
     // Build styled text only for the visible window
-    let lines: Vec<Line> = app
-        .logs
-        .iter()
-        .skip(scroll_offset)
-        .take(visible_height)
-        .map(|entry| highlight_log_line(&entry.line, entry.level))
-        .collect();
+    let lines: Vec<Line> = if has_filter {
+        app.log_filtered_indices
+            .iter()
+            .skip(scroll_offset)
+            .take(visible_height)
+            .filter_map(|&idx| app.logs.get(idx))
+            .map(|entry| highlight_log_line(&entry.line, entry.level))
+            .collect()
+    } else {
+        app.logs
+            .iter()
+            .skip(scroll_offset)
+            .take(visible_height)
+            .map(|entry| highlight_log_line(&entry.line, entry.level))
+            .collect()
+    };
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
 
     // Reserve space for scrollbar
     let logs_area = Rect {
-        width: inner.width.saturating_sub(1),
-        ..inner
+        width: content_area.width.saturating_sub(1),
+        ..content_area
     };
     frame.render_widget(paragraph, logs_area);
 
     // Render scrollbar
     let scrollbar_area = Rect {
-        x: inner.x + inner.width.saturating_sub(1),
-        y: inner.y,
+        x: content_area.x + content_area.width.saturating_sub(1),
+        y: content_area.y,
         width: 1,
-        height: inner.height,
+        height: content_area.height,
     };
 
     // Store scrollbar area for drag detection
     app.scrollbar_area = scrollbar_area;
 
     // Update scrollbar state
-    // ratatui's Scrollbar calculates thumb position using:
-    //   thumb_start = position * track_length / (content_length - 1 + viewport)
-    // For thumb to reach the bottom, position must approach content_length - 1.
-    //
-    // Our scroll_offset ranges from 0 to (total_lines - visible_height).
-    // We need to map this to 0 to (total_lines - 1) for the scrollbar.
     let max_scroll_offset = total_lines.saturating_sub(visible_height);
     let position = if max_scroll_offset == 0 {
         0
     } else {
-        // Scale scroll_offset to the scrollbar's position range
         let max_position = total_lines.saturating_sub(1);
         scroll_offset * max_position / max_scroll_offset
     };
@@ -97,6 +125,319 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         .style(theme::dim());
 
     frame.render_stateful_widget(scrollbar, scrollbar_area, &mut app.log_scrollbar_state);
+
+    // Render account dropdown popup if open
+    if app.log_account_dropdown_open {
+        render_account_dropdown(frame, area, app);
+    }
+}
+
+/// Render the filter toolbar row, storing hit-test rects for mouse interaction
+fn render_toolbar(frame: &mut Frame, area: Rect, app: &mut App) {
+    if area.height == 0 {
+        return;
+    }
+
+    let first_row = Rect { height: 1, ..area };
+    let mut spans: Vec<Span> = Vec::new();
+
+    // Track x position for computing hit-test rects
+    let mut x_pos: u16 = area.x;
+
+    // Leading space
+    spans.push(Span::styled(" ", theme::dim()));
+    x_pos += 1;
+
+    // Level filter badges - track each badge's area
+    let levels: [(char, &str, usize, Color); 4] = [
+        ('d', "Debug", 0, Color::DarkGray),
+        ('i', "Info", 1, Color::Green),
+        ('w', "Warn", 2, Color::Yellow),
+        ('e', "Error", 3, Color::Red),
+    ];
+
+    for (key, label, idx, color) in &levels {
+        let enabled = app.log_level_filter[*idx];
+        let is_hovered = app.hovered_log_level == Some(*idx);
+
+        // Each badge: "■ Label(k) " = 2 + label.len() + 3 + 1 chars
+        let badge_start = x_pos;
+        let indicator = if enabled { "\u{25a0}" } else { "\u{25a1}" }; // ■ or □
+
+        let badge_style = if is_hovered {
+            Style::default()
+                .fg(if enabled { *color } else { Color::White })
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else if enabled {
+            Style::default().fg(*color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        let label_style = if is_hovered {
+            Style::default()
+                .fg(if enabled { *color } else { Color::White })
+                .add_modifier(Modifier::UNDERLINED)
+        } else if enabled {
+            Style::default().fg(*color)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        spans.push(Span::styled(format!("{} ", indicator), badge_style));
+        x_pos += 2;
+        spans.push(Span::styled(label.to_string(), label_style));
+        x_pos += label.len() as u16;
+        spans.push(Span::styled(
+            format!("({})", key),
+            if is_hovered {
+                Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ));
+        x_pos += 3;
+        spans.push(Span::raw(" "));
+        x_pos += 1;
+
+        // Store this badge's hit-test area
+        let badge_width = x_pos - badge_start;
+        app.log_level_badge_areas[*idx] = Rect {
+            x: badge_start,
+            y: first_row.y,
+            width: badge_width,
+            height: 1,
+        };
+    }
+
+    // Separator
+    spans.push(Span::styled("\u{2502} ", theme::dim())); // │
+    x_pos += 2;
+
+    // Account filter
+    let account_start = x_pos;
+    let account_label = match &app.log_account_filter {
+        None => "All Accounts".to_string(),
+        Some(email) => email.clone(),
+    };
+
+    let is_account_hovered = app.hovered_log_account;
+
+    let account_prefix_style = if is_account_hovered {
+        Style::default()
+            .fg(theme::PRIMARY)
+            .add_modifier(Modifier::UNDERLINED)
+    } else {
+        theme::dim()
+    };
+
+    let account_value_style = if is_account_hovered {
+        Style::default()
+            .fg(theme::PRIMARY)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else if app.log_account_filter.is_some() {
+        Style::default()
+            .fg(theme::PRIMARY)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        theme::dim()
+    };
+
+    spans.push(Span::styled("Account: ", account_prefix_style));
+    x_pos += 9;
+    spans.push(Span::styled(account_label.clone(), account_value_style));
+    x_pos += account_label.len() as u16;
+
+    let arrow_style = if is_account_hovered {
+        Style::default().fg(theme::PRIMARY)
+    } else {
+        theme::dim()
+    };
+    spans.push(Span::styled(
+        if app.log_account_dropdown_open {
+            " \u{25b2}" // ▲
+        } else {
+            " \u{25bc}" // ▼
+        },
+        arrow_style,
+    ));
+    x_pos += 2;
+
+    // Store account filter hit-test area
+    app.log_account_filter_area = Rect {
+        x: account_start,
+        y: first_row.y,
+        width: x_pos - account_start,
+        height: 1,
+    };
+
+    // Show filtered count if filters are active
+    if app.has_active_log_filter() {
+        let filtered = app.log_filtered_indices.len();
+        let total = app.logs.len();
+        spans.push(Span::styled(" \u{2502} ", theme::dim())); // │
+        spans.push(Span::styled(
+            format!("{}/{}", filtered, total),
+            Style::default().fg(theme::WARNING),
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), first_row);
+
+    // Second row: search bar (if active or has query)
+    if area.height >= 2 && (app.log_search_active || !app.log_search_query.is_empty()) {
+        let search_row = Rect {
+            y: area.y + 1,
+            height: 1,
+            ..area
+        };
+
+        // Store search area for click detection
+        app.log_search_area = search_row;
+
+        let mut search_spans: Vec<Span> = Vec::new();
+        search_spans.push(Span::styled(
+            " / ",
+            Style::default()
+                .fg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ));
+        search_spans.push(Span::styled(
+            app.log_search_query.clone(),
+            if app.log_search_active {
+                Style::default().fg(theme::TEXT)
+            } else {
+                theme::dim()
+            },
+        ));
+        if app.log_search_active {
+            // Cursor
+            search_spans.push(Span::styled(
+                "\u{2588}", // █ block cursor
+                Style::default().fg(theme::PRIMARY),
+            ));
+        }
+
+        frame.render_widget(Paragraph::new(Line::from(search_spans)), search_row);
+    } else {
+        app.log_search_area = Rect::default();
+    }
+}
+
+/// Render the account filter dropdown popup, storing hit-test rects
+fn render_account_dropdown(frame: &mut Frame, area: Rect, app: &mut App) {
+    let emails = app.log_account_emails();
+    let item_count = emails.len() + 1; // +1 for "All Accounts"
+    let dropdown_height = (item_count as u16 + 2).min(area.height.saturating_sub(4)); // +2 for borders
+    let dropdown_width = emails.iter().map(|e| e.len()).max().unwrap_or(12).max(14) as u16 + 6; // padding + borders + prefix
+
+    // Position dropdown below the account filter label
+    let dropdown_x = app.log_account_filter_area.x;
+    let dropdown_y = app.log_account_filter_area.y + 1;
+
+    let dropdown_area = Rect {
+        x: dropdown_x.min(area.x + area.width.saturating_sub(dropdown_width)),
+        y: dropdown_y,
+        width: dropdown_width.min(area.width),
+        height: dropdown_height,
+    };
+
+    // Store dropdown area for mouse detection
+    app.log_dropdown_area = dropdown_area;
+
+    let block = Block::default()
+        .title(" Account ")
+        .title_style(theme::primary())
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(theme::border_focused())
+        .style(theme::surface());
+
+    let inner = block.inner(dropdown_area);
+
+    // Clear the area behind the dropdown
+    frame.render_widget(Clear, dropdown_area);
+    frame.render_widget(block, dropdown_area);
+
+    // Store item areas for mouse hit-testing
+    app.log_dropdown_item_areas.clear();
+
+    // Render items
+    let mut lines: Vec<Line> = Vec::new();
+
+    // "All Accounts" option
+    let is_hovered = app.hovered_log_dropdown_item == Some(0);
+    let is_selected = app.log_account_dropdown_selected == 0;
+    let is_current = app.log_account_filter.is_none();
+    let all_style = if is_hovered || is_selected {
+        Style::default()
+            .fg(theme::PRIMARY)
+            .add_modifier(Modifier::BOLD)
+    } else if is_current {
+        Style::default().fg(theme::TEXT)
+    } else {
+        theme::dim()
+    };
+    let bg_style = if is_hovered || is_selected {
+        Style::default().bg(Color::Rgb(30, 40, 55))
+    } else {
+        Style::default()
+    };
+    let prefix = if is_current {
+        "\u{25cf} " // ●
+    } else {
+        "  "
+    };
+    lines.push(Line::from(vec![
+        Span::styled(prefix, all_style.patch(bg_style)),
+        Span::styled("All Accounts", all_style.patch(bg_style)),
+    ]));
+
+    app.log_dropdown_item_areas.push(Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 1,
+    });
+
+    // Individual accounts
+    for (i, email) in emails.iter().enumerate() {
+        let is_hovered = app.hovered_log_dropdown_item == Some(i + 1);
+        let is_selected = app.log_account_dropdown_selected == i + 1;
+        let is_current = app.log_account_filter.as_ref() == Some(email);
+        let style = if is_hovered || is_selected {
+            Style::default()
+                .fg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD)
+        } else if is_current {
+            Style::default().fg(theme::TEXT)
+        } else {
+            theme::dim()
+        };
+        let bg_style = if is_hovered || is_selected {
+            Style::default().bg(Color::Rgb(30, 40, 55))
+        } else {
+            Style::default()
+        };
+        let prefix = if is_current { "\u{25cf} " } else { "  " }; // ●
+        lines.push(Line::from(vec![
+            Span::styled(prefix, style.patch(bg_style)),
+            Span::styled(email.clone(), style.patch(bg_style)),
+        ]));
+
+        let item_y = inner.y + (i as u16) + 1;
+        if item_y < inner.y + inner.height {
+            app.log_dropdown_item_areas.push(Rect {
+                x: inner.x,
+                y: item_y,
+                width: inner.width,
+                height: 1,
+            });
+        }
+    }
+
+    let content = Paragraph::new(lines);
+    frame.render_widget(content, inner);
 }
 
 /// Highlight a log line with syntax coloring
@@ -261,6 +602,7 @@ fn get_value_style(key: &str, value: &str) -> Style {
         }
         "request_id" | "agent" => Style::default().fg(Color::DarkGray),
         "address" | "port" => Style::default().fg(Color::Cyan),
+        "account" => Style::default().fg(Color::Magenta),
         "error" => Style::default().fg(Color::Red),
         _ => Style::default().fg(theme::TEXT),
     }

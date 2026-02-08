@@ -211,6 +211,37 @@ pub struct App {
     pub cached_uptime: String,
     /// Last tab area width used for tab_areas calculation (for invalidation)
     cached_tabs_area: Rect,
+    // Log filtering and search state
+    /// Level filter toggles: [Debug, Info, Warn, Error] - all enabled by default
+    pub log_level_filter: [bool; 4],
+    /// Account email filter (None = all accounts)
+    pub log_account_filter: Option<String>,
+    /// Whether search bar is active
+    pub log_search_active: bool,
+    /// Search query string
+    pub log_search_query: String,
+    /// Cached filtered indices into self.logs (indices of entries that pass filters)
+    pub log_filtered_indices: Vec<usize>,
+    /// Whether the account filter dropdown is open
+    pub log_account_dropdown_open: bool,
+    /// Selected index in account dropdown (for keyboard navigation)
+    pub log_account_dropdown_selected: usize,
+    /// Cached toolbar rects for mouse interaction: [Debug, Info, Warn, Error] level badge areas
+    pub log_level_badge_areas: [Rect; 4],
+    /// Cached toolbar rect for account filter click area
+    pub log_account_filter_area: Rect,
+    /// Cached dropdown area for mouse interaction
+    pub log_dropdown_area: Rect,
+    /// Cached dropdown item areas (one per item including "All Accounts")
+    pub log_dropdown_item_areas: Vec<Rect>,
+    /// Hovered level badge index (None if not hovering)
+    pub hovered_log_level: Option<usize>,
+    /// Hovered account filter label
+    pub hovered_log_account: bool,
+    /// Hovered dropdown item index (None if not hovering)
+    pub hovered_log_dropdown_item: Option<usize>,
+    /// Cached search bar area for click detection
+    pub log_search_area: Rect,
 }
 
 impl App {
@@ -289,6 +320,21 @@ impl App {
             cached_requests_per_min: 0.0,
             cached_uptime: String::from("00:00:00"),
             cached_tabs_area: Rect::default(),
+            log_level_filter: [true; 4],
+            log_account_filter: None,
+            log_search_active: false,
+            log_search_query: String::new(),
+            log_filtered_indices: Vec::new(),
+            log_account_dropdown_open: false,
+            log_account_dropdown_selected: 0,
+            log_level_badge_areas: [Rect::default(); 4],
+            log_account_filter_area: Rect::default(),
+            log_dropdown_area: Rect::default(),
+            log_dropdown_item_areas: Vec::new(),
+            hovered_log_level: None,
+            hovered_log_account: false,
+            hovered_log_dropdown_item: None,
+            log_search_area: Rect::default(),
         }
     }
 
@@ -321,6 +367,11 @@ impl App {
 
         // Update cached uptime string (avoids format! allocation per frame)
         self.cached_uptime = self.get_daemon_uptime();
+
+        // Rebuild filtered indices if any filter is active
+        if self.has_active_log_filter() {
+            self.refilter_logs();
+        }
     }
 
     /// Recompute overview stats from logs (called once per log refresh, not per frame)
@@ -332,6 +383,82 @@ impl App {
         self.cached_rate_history = super::data::build_rate_history(&self.logs, now);
         self.cached_avg_response_ms = super::data::calculate_avg_response_time(&self.logs);
         self.cached_requests_per_min = super::data::calculate_requests_per_min(&self.logs, now);
+    }
+
+    /// Rebuild the filtered log indices based on current filter/search state
+    pub fn refilter_logs(&mut self) {
+        self.log_filtered_indices.clear();
+
+        for (i, entry) in self.logs.iter().enumerate() {
+            // Check level filter
+            let level_idx = match entry.level {
+                super::data::LogLevel::Debug => 0,
+                super::data::LogLevel::Info => 1,
+                super::data::LogLevel::Warn => 2,
+                super::data::LogLevel::Error => 3,
+            };
+            if !self.log_level_filter[level_idx] {
+                continue;
+            }
+
+            // Check account filter
+            if let Some(ref filter_email) = self.log_account_filter {
+                // Only filter lines that have an account field; pass through lines without one
+                if let Some(ref line_email) = entry.account_email
+                    && line_email != filter_email
+                {
+                    continue;
+                }
+            }
+
+            // Check search query
+            if !self.log_search_query.is_empty() {
+                let query_lower = self.log_search_query.to_lowercase();
+                if !entry.line.to_lowercase().contains(&query_lower) {
+                    continue;
+                }
+            }
+
+            self.log_filtered_indices.push(i);
+        }
+    }
+
+    /// Check if any log filter is active (not all levels enabled, or account filter, or search)
+    pub fn has_active_log_filter(&self) -> bool {
+        !self.log_level_filter.iter().all(|&v| v)
+            || self.log_account_filter.is_some()
+            || !self.log_search_query.is_empty()
+    }
+
+    /// Get the list of unique account emails (from cached accounts + log entries)
+    pub fn log_account_emails(&self) -> Vec<String> {
+        let mut emails = std::collections::HashSet::new();
+
+        // Add emails from the cached account list (always available)
+        for acc in &self.accounts {
+            if !acc.email.is_empty() {
+                emails.insert(acc.email.clone());
+            }
+        }
+
+        // Also add any emails seen in log entries (may include accounts no longer configured)
+        for entry in self.logs.iter() {
+            if let Some(ref email) = entry.account_email {
+                emails.insert(email.clone());
+            }
+        }
+
+        let mut sorted: Vec<String> = emails.into_iter().collect();
+        sorted.sort();
+        sorted
+    }
+
+    /// Toggle a log level filter
+    pub fn toggle_log_level(&mut self, level_idx: usize) {
+        if level_idx < 4 {
+            self.log_level_filter[level_idx] = !self.log_level_filter[level_idx];
+            self.refilter_logs();
+        }
     }
 
     /// Get daemon uptime as a formatted string (HH:MM:SS)
@@ -650,6 +777,62 @@ impl App {
             return;
         }
 
+        // Handle account dropdown when open (blocks other Logs input)
+        if self.log_account_dropdown_open {
+            match code {
+                KeyCode::Esc => {
+                    self.log_account_dropdown_open = false;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.log_account_dropdown_selected > 0 {
+                        self.log_account_dropdown_selected -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let emails = self.log_account_emails();
+                    let max = emails.len(); // 0 = "All", 1..=len = emails
+                    if self.log_account_dropdown_selected < max {
+                        self.log_account_dropdown_selected += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    let emails = self.log_account_emails();
+                    if self.log_account_dropdown_selected == 0 {
+                        self.log_account_filter = None;
+                    } else if let Some(email) = emails.get(self.log_account_dropdown_selected - 1) {
+                        self.log_account_filter = Some(email.clone());
+                    }
+                    self.log_account_dropdown_open = false;
+                    self.refilter_logs();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle search input when active (captures most keys)
+        if self.log_search_active {
+            match code {
+                KeyCode::Esc => {
+                    self.log_search_active = false;
+                    // Don't clear query - user might want to keep the filter
+                }
+                KeyCode::Enter => {
+                    self.log_search_active = false;
+                }
+                KeyCode::Backspace => {
+                    self.log_search_query.pop();
+                    self.refilter_logs();
+                }
+                KeyCode::Char(c) => {
+                    self.log_search_query.push(c);
+                    self.refilter_logs();
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match code {
             KeyCode::Char('q') => self.running = false,
             // Config-specific Esc (must come before general Esc)
@@ -785,6 +968,44 @@ impl App {
                 self.log_scroll = 0;
                 self.log_auto_scroll = true;
                 self.update_scrollbar();
+            }
+            // Log filter/search keybindings
+            KeyCode::Char('/') if self.current_tab == Tab::Logs => {
+                self.log_search_active = true;
+            }
+            KeyCode::Char('d') if self.current_tab == Tab::Logs => {
+                self.toggle_log_level(0); // Debug
+            }
+            KeyCode::Char('i') if self.current_tab == Tab::Logs => {
+                self.toggle_log_level(1); // Info
+            }
+            KeyCode::Char('w') if self.current_tab == Tab::Logs => {
+                self.toggle_log_level(2); // Warn
+            }
+            KeyCode::Char('e') if self.current_tab == Tab::Logs => {
+                self.toggle_log_level(3); // Error
+            }
+            KeyCode::Char('a') if self.current_tab == Tab::Logs => {
+                self.log_account_dropdown_open = true;
+                // Pre-select current filter in dropdown
+                if let Some(ref email) = self.log_account_filter {
+                    let emails = self.log_account_emails();
+                    self.log_account_dropdown_selected = emails
+                        .iter()
+                        .position(|e| e == email)
+                        .map(|i| i + 1)
+                        .unwrap_or(0);
+                } else {
+                    self.log_account_dropdown_selected = 0;
+                }
+            }
+            KeyCode::Char('c') if self.current_tab == Tab::Logs => {
+                // Clear all filters
+                self.log_level_filter = [true; 4];
+                self.log_account_filter = None;
+                self.log_search_query.clear();
+                self.log_search_active = false;
+                self.log_filtered_indices.clear();
             }
             // Config navigation (when on Config tab and not editing)
             KeyCode::Up | KeyCode::Char('k')
@@ -1107,6 +1328,66 @@ impl App {
             }
             // Left click down
             MouseEventKind::Down(MouseButton::Left) => {
+                // Handle dropdown item clicks first (when dropdown is open)
+                if self.log_account_dropdown_open {
+                    // Check if click is inside the dropdown
+                    if self.is_in_rect(column, row, self.log_dropdown_area) {
+                        for (i, item_area) in self.log_dropdown_item_areas.iter().enumerate() {
+                            if self.is_in_rect(column, row, *item_area) {
+                                let emails = self.log_account_emails();
+                                if i == 0 {
+                                    self.log_account_filter = None;
+                                } else if let Some(email) = emails.get(i - 1) {
+                                    self.log_account_filter = Some(email.clone());
+                                }
+                                self.log_account_dropdown_open = false;
+                                self.refilter_logs();
+                                return;
+                            }
+                        }
+                    } else {
+                        // Click outside dropdown closes it
+                        self.log_account_dropdown_open = false;
+                    }
+                    return;
+                }
+
+                // Check logs toolbar clicks (when on Logs tab)
+                if self.current_tab == Tab::Logs {
+                    // Check level badge clicks
+                    for i in 0..4 {
+                        if self.is_in_rect(column, row, self.log_level_badge_areas[i]) {
+                            self.toggle_log_level(i);
+                            return;
+                        }
+                    }
+
+                    // Check account filter click
+                    if self.is_in_rect(column, row, self.log_account_filter_area) {
+                        self.log_account_dropdown_open = !self.log_account_dropdown_open;
+                        if self.log_account_dropdown_open {
+                            // Pre-select current filter in dropdown
+                            if let Some(ref email) = self.log_account_filter {
+                                let emails = self.log_account_emails();
+                                self.log_account_dropdown_selected = emails
+                                    .iter()
+                                    .position(|e| e == email)
+                                    .map(|i| i + 1)
+                                    .unwrap_or(0);
+                            } else {
+                                self.log_account_dropdown_selected = 0;
+                            }
+                        }
+                        return;
+                    }
+
+                    // Check search area click (activates search)
+                    if self.is_in_rect(column, row, self.log_search_area) {
+                        self.log_search_active = true;
+                        return;
+                    }
+                }
+
                 // Check scrollbar drag start
                 if self.current_tab == Tab::Logs
                     && self.is_in_rect(column, row, self.scrollbar_area)
@@ -1181,6 +1462,38 @@ impl App {
             if self.is_in_rect(column, row, *tab_area) {
                 self.hovered_tab = Some(i);
                 break;
+            }
+        }
+
+        // Check log filter toolbar hover states
+        self.hovered_log_level = None;
+        self.hovered_log_account = false;
+        self.hovered_log_dropdown_item = None;
+
+        if self.current_tab == Tab::Logs {
+            // Check dropdown item hover (when open)
+            if self.log_account_dropdown_open {
+                for (i, item_area) in self.log_dropdown_item_areas.iter().enumerate() {
+                    if self.is_in_rect(column, row, *item_area) {
+                        self.hovered_log_dropdown_item = Some(i);
+                        // Also update keyboard selection to follow mouse
+                        self.log_account_dropdown_selected = i;
+                        break;
+                    }
+                }
+            }
+
+            // Check level badge hover
+            for i in 0..4 {
+                if self.is_in_rect(column, row, self.log_level_badge_areas[i]) {
+                    self.hovered_log_level = Some(i);
+                    break;
+                }
+            }
+
+            // Check account filter hover
+            if self.is_in_rect(column, row, self.log_account_filter_area) {
+                self.hovered_log_account = true;
             }
         }
 
