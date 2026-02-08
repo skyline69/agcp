@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::MappingRule;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Model {
@@ -158,6 +160,169 @@ pub fn is_thinking_model(model_name: &str) -> bool {
     false
 }
 
+/// Simple glob pattern matching supporting `*` as a wildcard.
+/// - `*` at end: prefix match (e.g. "gpt-4*" matches "gpt-4o-mini")
+/// - `*` at start: suffix match (e.g. "*-thinking" matches "claude-opus-4-5-thinking")
+/// - `*` in middle: splits on `*` and checks prefix + suffix
+/// - No `*`: exact match (case-insensitive)
+pub fn glob_match(pattern: &str, input: &str) -> bool {
+    let pattern = pattern.to_lowercase();
+    let input = input.to_lowercase();
+
+    if let Some(idx) = pattern.find('*') {
+        let prefix = &pattern[..idx];
+        let suffix = &pattern[idx + 1..];
+
+        if suffix.is_empty() {
+            // "gpt-4*" — prefix match
+            input.starts_with(prefix)
+        } else if prefix.is_empty() {
+            // "*-thinking" — suffix match
+            input.ends_with(suffix)
+        } else {
+            // "claude-*-opus" — prefix + suffix match
+            input.starts_with(prefix) && input.ends_with(suffix) && input.len() >= prefix.len() + suffix.len()
+        }
+    } else {
+        // Exact match (case-insensitive)
+        pattern == input
+    }
+}
+
+/// Resolve a model name using user-defined mapping rules first,
+/// then falling back to the hardcoded alias table.
+/// Also handles the background task model substitution.
+pub fn resolve_with_mappings(
+    model: &str,
+    rules: &[MappingRule],
+    background_task_model: &str,
+) -> String {
+    // Check for background task model
+    if model == "internal-background-task" {
+        return background_task_model.to_string();
+    }
+
+    // Check user mappings (first match wins)
+    for rule in rules {
+        if glob_match(&rule.from, model) {
+            return rule.to.clone();
+        }
+    }
+
+    // Fall through to hardcoded aliases
+    resolve_model_alias(model).to_string()
+}
+
+/// Available mapping presets
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MappingPreset {
+    None,
+    Balanced,
+    Performance,
+    Cost,
+    Custom,
+}
+
+impl MappingPreset {
+    pub fn name(&self) -> &'static str {
+        match self {
+            MappingPreset::None => "none",
+            MappingPreset::Balanced => "balanced",
+            MappingPreset::Performance => "performance",
+            MappingPreset::Cost => "cost",
+            MappingPreset::Custom => "custom",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            MappingPreset::None => "None",
+            MappingPreset::Balanced => "Balanced",
+            MappingPreset::Performance => "Performance",
+            MappingPreset::Cost => "Cost Optimized",
+            MappingPreset::Custom => "Custom",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            MappingPreset::None => "No mappings — pass model names through unchanged",
+            MappingPreset::Balanced => "Smart tiering based on model capability class",
+            MappingPreset::Performance => "Map everything to the most capable models",
+            MappingPreset::Cost => "Map everything to the cheapest capable models",
+            MappingPreset::Custom => "User-defined custom mapping rules",
+        }
+    }
+
+    pub fn from_name(name: &str) -> MappingPreset {
+        match name.to_lowercase().as_str() {
+            "balanced" => MappingPreset::Balanced,
+            "performance" => MappingPreset::Performance,
+            "cost" => MappingPreset::Cost,
+            "custom" => MappingPreset::Custom,
+            _ => MappingPreset::None,
+        }
+    }
+
+    pub fn next(&self) -> MappingPreset {
+        match self {
+            MappingPreset::None => MappingPreset::Balanced,
+            MappingPreset::Balanced => MappingPreset::Performance,
+            MappingPreset::Performance => MappingPreset::Cost,
+            MappingPreset::Cost => MappingPreset::Custom,
+            MappingPreset::Custom => MappingPreset::None,
+        }
+    }
+
+    /// Get the default rules for this preset
+    pub fn rules(&self) -> Vec<MappingRule> {
+        match self {
+            MappingPreset::Balanced => vec![
+                MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-2.5-flash".into() },
+                MappingRule { from: "claude-haiku-*".into(), to: "gemini-2.5-flash".into() },
+                MappingRule { from: "gpt-4o*".into(), to: "gemini-3-flash".into() },
+                MappingRule { from: "gpt-4*".into(), to: "gemini-3-pro-high".into() },
+                MappingRule { from: "gpt-3.5*".into(), to: "gemini-2.5-flash".into() },
+                MappingRule { from: "o1-*".into(), to: "gemini-3-pro-high".into() },
+                MappingRule { from: "o3-*".into(), to: "gemini-3-pro-high".into() },
+                MappingRule { from: "claude-3-opus-*".into(), to: "claude-opus-4-6-thinking".into() },
+                MappingRule { from: "claude-3-5-sonnet-*".into(), to: "claude-sonnet-4-5".into() },
+                MappingRule { from: "claude-opus-4-*".into(), to: "claude-opus-4-6-thinking".into() },
+            ],
+            MappingPreset::Performance => vec![
+                MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-3-flash".into() },
+                MappingRule { from: "claude-haiku-*".into(), to: "gemini-3-flash".into() },
+                MappingRule { from: "gpt-4o*".into(), to: "gemini-3-pro-high".into() },
+                MappingRule { from: "gpt-4*".into(), to: "gemini-3-pro-high".into() },
+                MappingRule { from: "gpt-3.5*".into(), to: "gemini-3-flash".into() },
+                MappingRule { from: "o1-*".into(), to: "claude-opus-4-6-thinking".into() },
+                MappingRule { from: "o3-*".into(), to: "claude-opus-4-6-thinking".into() },
+                MappingRule { from: "claude-3-opus-*".into(), to: "claude-opus-4-6-thinking".into() },
+                MappingRule { from: "claude-3-5-sonnet-*".into(), to: "claude-sonnet-4-5-thinking".into() },
+                MappingRule { from: "claude-opus-4-*".into(), to: "claude-opus-4-6-thinking".into() },
+            ],
+            MappingPreset::Cost => vec![
+                MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-2.5-flash-lite".into() },
+                MappingRule { from: "claude-haiku-*".into(), to: "gemini-2.5-flash-lite".into() },
+                MappingRule { from: "gpt-4o*".into(), to: "gemini-2.5-flash".into() },
+                MappingRule { from: "gpt-4*".into(), to: "gemini-3-flash".into() },
+                MappingRule { from: "gpt-3.5*".into(), to: "gemini-2.5-flash-lite".into() },
+                MappingRule { from: "o1-*".into(), to: "gemini-3-flash".into() },
+                MappingRule { from: "o3-*".into(), to: "gemini-3-flash".into() },
+                MappingRule { from: "claude-3-opus-*".into(), to: "claude-sonnet-4-5".into() },
+                MappingRule { from: "claude-3-5-sonnet-*".into(), to: "gemini-3-flash".into() },
+                MappingRule { from: "claude-opus-4-*".into(), to: "claude-sonnet-4-5".into() },
+            ],
+            MappingPreset::None | MappingPreset::Custom => vec![],
+        }
+    }
+}
+
+/// Get a list of all available target model IDs for use in the mappings UI
+pub fn all_target_models() -> Vec<&'static str> {
+    Model::all().iter().map(|m| m.anthropic_id()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +413,103 @@ mod tests {
 
         // Unknown models have no fallback
         assert_eq!(get_fallback_model("unknown-model"), None);
+    }
+
+    #[test]
+    fn test_glob_match() {
+        // Suffix wildcard (prefix match)
+        assert!(glob_match("gpt-4*", "gpt-4"));
+        assert!(glob_match("gpt-4*", "gpt-4o"));
+        assert!(glob_match("gpt-4*", "gpt-4o-mini"));
+        assert!(glob_match("gpt-4*", "GPT-4O")); // case-insensitive
+        assert!(!glob_match("gpt-4*", "gpt-3.5-turbo"));
+
+        // Prefix wildcard (suffix match)
+        assert!(glob_match("*-thinking", "claude-opus-4-5-thinking"));
+        assert!(!glob_match("*-thinking", "claude-sonnet-4-5"));
+
+        // Middle wildcard
+        assert!(glob_match("claude-*-thinking", "claude-opus-4-5-thinking"));
+        assert!(!glob_match("claude-*-thinking", "claude-sonnet-4-5"));
+
+        // Exact match
+        assert!(glob_match("gpt-4", "gpt-4"));
+        assert!(glob_match("GPT-4", "gpt-4")); // case-insensitive
+        assert!(!glob_match("gpt-4", "gpt-4o"));
+
+        // Real-world patterns
+        assert!(glob_match("claude-3-haiku-*", "claude-3-haiku-20240307"));
+        assert!(glob_match("o1-*", "o1-preview"));
+        assert!(glob_match("o3-*", "o3-mini"));
+        assert!(glob_match("claude-opus-4-*", "claude-opus-4-5-thinking"));
+    }
+
+    #[test]
+    fn test_resolve_with_mappings() {
+        let rules = vec![
+            MappingRule { from: "gpt-4*".into(), to: "gemini-3-pro-high".into() },
+            MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-2.5-flash".into() },
+        ];
+
+        // User mapping takes priority
+        assert_eq!(
+            resolve_with_mappings("gpt-4o", &rules, "gemini-3-flash"),
+            "gemini-3-pro-high"
+        );
+        assert_eq!(
+            resolve_with_mappings("claude-3-haiku-20240307", &rules, "gemini-3-flash"),
+            "gemini-2.5-flash"
+        );
+
+        // No user mapping match -> falls through to hardcoded aliases
+        assert_eq!(
+            resolve_with_mappings("opus", &rules, "gemini-3-flash"),
+            "claude-opus-4-6-thinking"
+        );
+
+        // Background task model
+        assert_eq!(
+            resolve_with_mappings("internal-background-task", &rules, "gemini-3-flash"),
+            "gemini-3-flash"
+        );
+
+        // Unknown model passes through
+        assert_eq!(
+            resolve_with_mappings("totally-unknown", &rules, "gemini-3-flash"),
+            "totally-unknown"
+        );
+    }
+
+    #[test]
+    fn test_mapping_presets() {
+        // Balanced preset has rules
+        let balanced = MappingPreset::Balanced.rules();
+        assert!(!balanced.is_empty());
+        assert!(balanced.iter().any(|r| r.from == "gpt-4*"));
+
+        // Performance preset has rules
+        let perf = MappingPreset::Performance.rules();
+        assert!(!perf.is_empty());
+
+        // Cost preset has rules
+        let cost = MappingPreset::Cost.rules();
+        assert!(!cost.is_empty());
+
+        // None and Custom have no rules
+        assert!(MappingPreset::None.rules().is_empty());
+        assert!(MappingPreset::Custom.rules().is_empty());
+
+        // from_name round-trip
+        assert_eq!(MappingPreset::from_name("balanced"), MappingPreset::Balanced);
+        assert_eq!(MappingPreset::from_name("performance"), MappingPreset::Performance);
+        assert_eq!(MappingPreset::from_name("cost"), MappingPreset::Cost);
+        assert_eq!(MappingPreset::from_name("custom"), MappingPreset::Custom);
+        assert_eq!(MappingPreset::from_name("none"), MappingPreset::None);
+        assert_eq!(MappingPreset::from_name("unknown"), MappingPreset::None);
+
+        // Preset cycling
+        assert_eq!(MappingPreset::None.next(), MappingPreset::Balanced);
+        assert_eq!(MappingPreset::Balanced.next(), MappingPreset::Performance);
+        assert_eq!(MappingPreset::Custom.next(), MappingPreset::None);
     }
 }

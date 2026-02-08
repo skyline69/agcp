@@ -94,6 +94,8 @@ pub struct Config {
     pub cache: CacheConfig,
     #[serde(default)]
     pub cloudcode: CloudCodeConfig,
+    #[serde(default)]
+    pub mappings: MappingsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +234,65 @@ impl Default for CloudCodeConfig {
             max_retries: default_max_retries(),
             max_concurrent_requests: default_max_concurrent(),
             min_request_interval_ms: default_min_request_interval(),
+        }
+    }
+}
+
+/// A single model mapping rule: glob pattern -> target model.
+///
+/// Example in `config.toml`:
+/// ```toml
+/// [[mappings.rules]]
+/// from = "claude-3-haiku-*"
+/// to = "gemini-2.5-flash"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MappingRule {
+    /// Glob pattern to match incoming model names (e.g. "claude-3-haiku-*", "gpt-4*")
+    pub from: String,
+    /// Target model to resolve to (e.g. "gemini-2.5-flash")
+    pub to: String,
+}
+
+/// Configuration for model name mappings and presets.
+///
+/// Example in `config.toml`:
+/// ```toml
+/// [mappings]
+/// preset = "balanced"
+/// background_task_model = "gemini-3-flash"
+///
+/// [[mappings.rules]]
+/// from = "gpt-4*"
+/// to = "gemini-3-pro-high"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MappingsConfig {
+    /// Active preset: "balanced", "performance", "cost", "custom", or "none"
+    #[serde(default = "default_preset")]
+    pub preset: String,
+    /// Model used for background tasks (title generation, summaries, etc.)
+    #[serde(default = "default_background_model")]
+    pub background_task_model: String,
+    /// Custom mapping rules (glob pattern -> target model). First match wins.
+    #[serde(default)]
+    pub rules: Vec<MappingRule>,
+}
+
+fn default_preset() -> String {
+    "balanced".to_string()
+}
+
+fn default_background_model() -> String {
+    "gemini-3-flash".to_string()
+}
+
+impl Default for MappingsConfig {
+    fn default() -> Self {
+        Self {
+            preset: default_preset(),
+            background_task_model: default_background_model(),
+            rules: Vec::new(),
         }
     }
 }

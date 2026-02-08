@@ -32,6 +32,7 @@ pub enum Tab {
     Logs,
     Accounts,
     Config,
+    Mappings,
     Quota,
     About,
 }
@@ -43,6 +44,7 @@ impl Tab {
             Tab::Logs,
             Tab::Accounts,
             Tab::Config,
+            Tab::Mappings,
             Tab::Quota,
             Tab::About,
         ]
@@ -54,6 +56,7 @@ impl Tab {
             Tab::Logs => "Logs",
             Tab::Accounts => "Accounts",
             Tab::Config => "Config",
+            Tab::Mappings => "Mappings",
             Tab::Quota => "Quota",
             Tab::About => "About",
         }
@@ -64,7 +67,8 @@ impl Tab {
             Tab::Overview => Tab::Logs,
             Tab::Logs => Tab::Accounts,
             Tab::Accounts => Tab::Config,
-            Tab::Config => Tab::Quota,
+            Tab::Config => Tab::Mappings,
+            Tab::Mappings => Tab::Quota,
             Tab::Quota => Tab::About,
             Tab::About => Tab::Overview,
         }
@@ -76,7 +80,8 @@ impl Tab {
             Tab::Logs => Tab::Overview,
             Tab::Accounts => Tab::Logs,
             Tab::Config => Tab::Accounts,
-            Tab::Quota => Tab::Config,
+            Tab::Mappings => Tab::Config,
+            Tab::Quota => Tab::Mappings,
             Tab::About => Tab::Quota,
         }
     }
@@ -292,6 +297,27 @@ pub struct App {
     pub hovered_log_dropdown_item: Option<usize>,
     /// Cached search bar area for click detection
     pub log_search_area: Rect,
+    // Mappings tab state
+    /// Current mapping preset name
+    pub mapping_preset: crate::models::MappingPreset,
+    /// Current mapping rules (loaded from config or preset)
+    pub mapping_rules: Vec<crate::config::MappingRule>,
+    /// Background task model
+    pub mapping_background_model: String,
+    /// Selected rule index in mappings view
+    pub mapping_selected: usize,
+    /// Whether we're editing a mapping rule's "from" pattern
+    pub mapping_editing_from: bool,
+    /// Text buffer for editing mapping "from" pattern
+    pub mapping_edit_buffer: String,
+    /// Cached mappings content area for mouse click detection
+    pub mapping_area: Rect,
+    /// Hovered mapping rule index
+    pub hovered_mapping: Option<usize>,
+    /// Status message for mappings (e.g. "Saved", "Preset loaded")
+    pub mapping_status: Option<String>,
+    /// Whether mappings have unsaved changes
+    pub mapping_dirty: bool,
 }
 
 impl App {
@@ -389,6 +415,31 @@ impl App {
             hovered_log_account: false,
             hovered_log_dropdown_item: None,
             log_search_area: Rect::default(),
+            // Mappings state: load from config
+            mapping_preset: {
+                let cfg = crate::config::get_config();
+                crate::models::MappingPreset::from_name(&cfg.mappings.preset)
+            },
+            mapping_rules: {
+                let cfg = crate::config::get_config();
+                let preset = crate::models::MappingPreset::from_name(&cfg.mappings.preset);
+                if cfg.mappings.rules.is_empty() && preset != crate::models::MappingPreset::Custom {
+                    preset.rules()
+                } else {
+                    cfg.mappings.rules.clone()
+                }
+            },
+            mapping_background_model: crate::config::get_config()
+                .mappings
+                .background_task_model
+                .clone(),
+            mapping_selected: 0,
+            mapping_editing_from: false,
+            mapping_edit_buffer: String::new(),
+            mapping_area: Rect::default(),
+            hovered_mapping: None,
+            mapping_status: None,
+            mapping_dirty: false,
         }
     }
 
@@ -1012,6 +1063,52 @@ impl App {
         }
     }
 
+    /// Cycle the target model for the selected mapping rule
+    fn mapping_cycle_target(&mut self, forward: bool) {
+        let targets = crate::models::all_target_models();
+        if let Some(rule) = self.mapping_rules.get_mut(self.mapping_selected) {
+            let current_idx = targets
+                .iter()
+                .position(|t| *t == rule.to)
+                .unwrap_or(0);
+            let new_idx = if forward {
+                (current_idx + 1) % targets.len()
+            } else {
+                (current_idx + targets.len() - 1) % targets.len()
+            };
+            rule.to = targets[new_idx].to_string();
+            self.mapping_preset = crate::models::MappingPreset::Custom;
+            self.mapping_dirty = true;
+        }
+    }
+
+    /// Cycle the background task model
+    fn mapping_cycle_background(&mut self) {
+        let targets = crate::models::all_target_models();
+        let current_idx = targets
+            .iter()
+            .position(|t| *t == self.mapping_background_model.as_str())
+            .unwrap_or(0);
+        let new_idx = (current_idx + 1) % targets.len();
+        self.mapping_background_model = targets[new_idx].to_string();
+        self.mapping_dirty = true;
+    }
+
+    /// Save mapping rules to config
+    fn mapping_save(&mut self) {
+        let mut config = crate::config::get_config();
+        config.mappings.preset = self.mapping_preset.name().to_string();
+        config.mappings.background_task_model = self.mapping_background_model.clone();
+        config.mappings.rules = self.mapping_rules.clone();
+        if let Err(e) = config.save() {
+            self.mapping_status = Some(format!("Error: {}", e));
+            return;
+        }
+        crate::config::init_config(config);
+        self.mapping_dirty = false;
+        self.mapping_status = Some("Saved to config.toml".to_string());
+    }
+
     /// Handle keyboard input
     pub fn handle_key(&mut self, code: KeyCode) {
         // Handle startup warnings popup first (blocks other input)
@@ -1103,6 +1200,34 @@ impl App {
             return;
         }
 
+        // Handle mapping rule "from" pattern editing
+        if self.mapping_editing_from {
+            match code {
+                KeyCode::Esc => {
+                    self.mapping_editing_from = false;
+                    self.mapping_edit_buffer.clear();
+                }
+                KeyCode::Enter => {
+                    // Apply edited pattern
+                    if let Some(rule) = self.mapping_rules.get_mut(self.mapping_selected) {
+                        rule.from = self.mapping_edit_buffer.clone();
+                        self.mapping_preset = crate::models::MappingPreset::Custom;
+                        self.mapping_dirty = true;
+                    }
+                    self.mapping_editing_from = false;
+                    self.mapping_edit_buffer.clear();
+                }
+                KeyCode::Backspace => {
+                    self.mapping_edit_buffer.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.mapping_edit_buffer.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match code {
             KeyCode::Char('q') => self.running = false,
             // Config-specific Esc (must come before general Esc)
@@ -1161,6 +1286,13 @@ impl App {
             {
                 self.config_cycle_enum(true);
             }
+            // Cycle target model for selected rule (right arrow)
+            KeyCode::Right if self.current_tab == Tab::Mappings => {
+                self.mapping_cycle_target(true);
+            }
+            KeyCode::Left if self.current_tab == Tab::Mappings => {
+                self.mapping_cycle_target(false);
+            }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 self.current_tab = self.current_tab.next();
                 self.trigger_tab_effect = true;
@@ -1186,10 +1318,14 @@ impl App {
                 self.trigger_tab_effect = true;
             }
             KeyCode::Char('5') => {
-                self.current_tab = Tab::Quota;
+                self.current_tab = Tab::Mappings;
                 self.trigger_tab_effect = true;
             }
             KeyCode::Char('6') => {
+                self.current_tab = Tab::Quota;
+                self.trigger_tab_effect = true;
+            }
+            KeyCode::Char('7') => {
                 self.current_tab = Tab::About;
                 self.trigger_tab_effect = true;
             }
@@ -1337,6 +1473,70 @@ impl App {
                     && !self.config_editing =>
             {
                 self.restart_daemon();
+            }
+            // Mappings navigation
+            KeyCode::Up | KeyCode::Char('k') if self.current_tab == Tab::Mappings => {
+                if self.mapping_selected > 0 {
+                    self.mapping_selected -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') if self.current_tab == Tab::Mappings => {
+                if self.mapping_selected < self.mapping_rules.len().saturating_sub(1) {
+                    self.mapping_selected += 1;
+                }
+            }
+            // Cycle preset
+            KeyCode::Char('p') if self.current_tab == Tab::Mappings => {
+                self.mapping_preset = self.mapping_preset.next();
+                if self.mapping_preset != crate::models::MappingPreset::Custom {
+                    self.mapping_rules = self.mapping_preset.rules();
+                    self.mapping_selected = 0;
+                }
+                self.mapping_dirty = true;
+                self.mapping_status = Some(format!(
+                    "Preset: {}",
+                    self.mapping_preset.label()
+                ));
+            }
+            // Edit selected rule's "from" pattern
+            KeyCode::Enter if self.current_tab == Tab::Mappings => {
+                if let Some(rule) = self.mapping_rules.get(self.mapping_selected) {
+                    self.mapping_editing_from = true;
+                    self.mapping_edit_buffer = rule.from.clone();
+                }
+            }
+            // Add new rule
+            KeyCode::Char('a') if self.current_tab == Tab::Mappings => {
+                self.mapping_rules.push(crate::config::MappingRule {
+                    from: "pattern-*".to_string(),
+                    to: "gemini-3-flash".to_string(),
+                });
+                self.mapping_selected = self.mapping_rules.len() - 1;
+                self.mapping_preset = crate::models::MappingPreset::Custom;
+                self.mapping_dirty = true;
+                // Start editing immediately
+                self.mapping_editing_from = true;
+                self.mapping_edit_buffer = "pattern-*".to_string();
+            }
+            // Delete selected rule
+            KeyCode::Char('d') if self.current_tab == Tab::Mappings => {
+                if !self.mapping_rules.is_empty() {
+                    self.mapping_rules.remove(self.mapping_selected);
+                    if self.mapping_selected >= self.mapping_rules.len() && self.mapping_selected > 0
+                    {
+                        self.mapping_selected -= 1;
+                    }
+                    self.mapping_preset = crate::models::MappingPreset::Custom;
+                    self.mapping_dirty = true;
+                }
+            }
+            // Cycle background task model
+            KeyCode::Char('b') if self.current_tab == Tab::Mappings => {
+                self.mapping_cycle_background();
+            }
+            // Save mappings
+            KeyCode::Char('s') if self.current_tab == Tab::Mappings => {
+                self.mapping_save();
             }
             _ => {}
         }
@@ -1808,6 +2008,16 @@ impl App {
                     }
                 }
 
+                // Check mapping rule clicks
+                if self.current_tab == Tab::Mappings
+                    && self.is_in_rect(column, row, self.mapping_area)
+                {
+                    let relative_row = row.saturating_sub(self.mapping_area.y) as usize;
+                    if relative_row < self.mapping_rules.len() {
+                        self.mapping_selected = relative_row;
+                    }
+                }
+
                 // Check about page link click
                 if self.current_tab == Tab::About && self.about_link_hovered {
                     super::views::about::open_url(super::views::about::GITHUB_URL);
@@ -1895,6 +2105,17 @@ impl App {
             let relative_row = row.saturating_sub(self.config_area.y);
             if let Some(idx) = self.row_to_config_index(relative_row as usize) {
                 self.hovered_config = Some(idx);
+            }
+        }
+
+        // Check mapping rule hover
+        self.hovered_mapping = None;
+        if self.current_tab == Tab::Mappings
+            && self.is_in_rect(column, row, self.mapping_area)
+        {
+            let relative_row = row.saturating_sub(self.mapping_area.y) as usize;
+            if relative_row < self.mapping_rules.len() {
+                self.hovered_mapping = Some(relative_row);
             }
         }
 
@@ -2149,6 +2370,7 @@ fn render(frame: &mut Frame, app: &mut App, elapsed: Duration) {
             super::views::accounts::render(frame, content_area, app);
         }
         Tab::Config => super::views::config::render(frame, content_area, app),
+        Tab::Mappings => super::views::mappings::render(frame, content_area, app),
         Tab::Quota => super::views::quota::render(frame, content_area, app.get_active_quota_data()),
         Tab::About => {
             // Trigger update check on first visit to About tab

@@ -45,6 +45,19 @@ impl Footer {
                     ("?", "Help"),
                 ]);
             }
+            Tab::Mappings => {
+                return Self::new(vec![
+                    ("↑/↓", "Navigate"),
+                    ("p", "Preset"),
+                    ("Enter", "Edit"),
+                    ("◀/▶", "Target"),
+                    ("a", "Add"),
+                    ("d", "Delete"),
+                    ("b", "Background"),
+                    ("s", "Save"),
+                    ("?", "Help"),
+                ]);
+            }
             _ => {}
         }
 

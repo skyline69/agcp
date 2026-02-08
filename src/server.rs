@@ -23,7 +23,7 @@ use crate::error::{ApiError, AuthError, Error};
 use crate::format::{
     ChatCompletionRequest, MessagesRequest, ModelInfo, ModelsResponse, StreamEvent,
 };
-use crate::models::{Model, get_fallback_model, is_thinking_model, resolve_model_alias};
+use crate::models::{Model, get_fallback_model, is_thinking_model, resolve_with_mappings};
 use crate::stats::get_stats;
 
 /// Maximum request body size (10 MB).
@@ -417,7 +417,12 @@ async fn handle_messages(
 
     // Resolve model aliases (e.g., "opus" -> "claude-opus-4-6-thinking")
     let original_model = messages_request.model.clone();
-    messages_request.model = resolve_model_alias(&messages_request.model).to_string();
+    let config = get_config();
+    messages_request.model = resolve_with_mappings(
+        &messages_request.model,
+        &config.mappings.rules,
+        &config.mappings.background_task_model,
+    );
 
     debug!(
         original_model = %original_model,
@@ -433,7 +438,6 @@ async fn handle_messages(
         execute_messages_request(&messages_request, &state, request_id, false, bypass_cache).await;
 
     // Check if fallback is enabled and we got a quota exhaustion error
-    let config = get_config();
     if config.accounts.fallback
         && let Err(Error::Api(ApiError::QuotaExhausted { .. })) = &result
         && let Some(fallback_model) = get_fallback_model(&messages_request.model)
@@ -615,7 +619,12 @@ async fn handle_chat_completions(
     let mut messages_request = crate::format::openai_to_anthropic(&chat_request);
 
     let original_model = messages_request.model.clone();
-    messages_request.model = resolve_model_alias(&messages_request.model).to_string();
+    let config = get_config();
+    messages_request.model = resolve_with_mappings(
+        &messages_request.model,
+        &config.mappings.rules,
+        &config.mappings.background_task_model,
+    );
 
     debug!(
         original_model = %original_model,
@@ -630,7 +639,6 @@ async fn handle_chat_completions(
     let result = execute_openai_request(&messages_request, &state, request_id, false).await;
 
     // Check if fallback is enabled and we got a quota exhaustion error
-    let config = get_config();
     if config.accounts.fallback
         && let Err(Error::Api(ApiError::QuotaExhausted { .. })) = &result
         && let Some(fallback_model) = get_fallback_model(&messages_request.model)
@@ -974,7 +982,12 @@ async fn handle_responses(
     let mut messages_request = crate::format::responses_to_anthropic(&responses_request);
 
     let original_model = messages_request.model.clone();
-    messages_request.model = resolve_model_alias(&messages_request.model).to_string();
+    let config = get_config();
+    messages_request.model = resolve_with_mappings(
+        &messages_request.model,
+        &config.mappings.rules,
+        &config.mappings.background_task_model,
+    );
 
     debug!(
         original_model = %original_model,
