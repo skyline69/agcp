@@ -118,6 +118,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Status line at bottom
     lines.push(Line::from(""));
 
+    // Tooltip for selected/hovered field
+    let tooltip_idx = app.hovered_config.unwrap_or(app.config_selected);
+    if let Some(field) = app.config_fields.get(tooltip_idx)
+        && !field.description.is_empty()
+    {
+        lines.push(Line::from(vec![
+            Span::styled("  \u{25b8} ", theme::primary()), // ▸
+            Span::styled(field.description, theme::dim()),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
     if let Some(ref error) = app.config_error {
         lines.push(Line::from(Span::styled(
             format!("  Error: {}", error),
