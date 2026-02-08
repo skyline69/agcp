@@ -58,6 +58,11 @@ impl Footer {
                     ("?", "Help"),
                 ]);
             }
+            Tab::Overview => {
+                binds.insert(2, ("r", "Restart"));
+                binds.insert(2, ("x", "Stop"));
+                binds.insert(2, ("s", "Start"));
+            }
             _ => {}
         }
 

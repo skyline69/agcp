@@ -96,8 +96,8 @@ src/
 Models are defined in `src/models.rs`. The proxy supports:
 
 - Claude models: `claude-opus-4-6-thinking`, `claude-opus-4-5-thinking`, `claude-sonnet-4-5`, `claude-sonnet-4-5-thinking`
-- Gemini 2.5 models: `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-flash-thinking`, `gemini-2.5-pro`
-- Gemini 3 models: `gemini-3-flash`, `gemini-3-pro-high`, `gemini-3-pro-image`, `gemini-3-pro-low`
+- Gemini 3 models: `gemini-3-flash`, `gemini-3-pro-high`, `gemini-3-pro-low`
+- Other models: `gpt-oss-120b-medium`
 
 **Thinking Model Detection:**
 - Claude: requires "thinking" in model name

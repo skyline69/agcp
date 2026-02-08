@@ -1,25 +1,38 @@
 //! Status panel widget
 
+use std::time::{Duration, Instant};
+
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::tui::data::ServerStatus;
 use crate::tui::theme;
 
+/// Duration after which the daemon status message auto-clears
+const MESSAGE_TTL: Duration = Duration::from_secs(4);
+
 pub struct StatusPanel<'a> {
     pub status: ServerStatus,
     pub address: &'a str,
     pub port: u16,
     pub uptime: &'a str,
+    pub message: Option<&'a (String, bool, Instant)>,
 }
 
 impl<'a> StatusPanel<'a> {
-    pub fn new(status: ServerStatus, address: &'a str, port: u16, uptime: &'a str) -> Self {
+    pub fn new(
+        status: ServerStatus,
+        address: &'a str,
+        port: u16,
+        uptime: &'a str,
+        message: Option<&'a (String, bool, Instant)>,
+    ) -> Self {
         Self {
             status,
             address,
             port,
             uptime,
+            message,
         }
     }
 }
@@ -43,7 +56,7 @@ impl Widget for StatusPanel<'_> {
         block.render(area, buf);
 
         // Content lines
-        let lines = vec![
+        let mut lines = vec![
             Line::from(vec![
                 Span::styled(status_icon, status_style),
                 Span::raw(" Server: "),
@@ -65,6 +78,18 @@ impl Widget for StatusPanel<'_> {
                 Span::styled(self.uptime, theme::dim()),
             ]),
         ];
+
+        // Show transient action message (if within TTL)
+        if let Some((msg, is_error, created)) = self.message
+            && created.elapsed() < MESSAGE_TTL
+        {
+            let style = if *is_error {
+                theme::error()
+            } else {
+                theme::success()
+            };
+            lines.push(Line::from(Span::styled(format!("  ▸ {}", msg), style)));
+        }
 
         Paragraph::new(lines).render(inner, buf);
     }

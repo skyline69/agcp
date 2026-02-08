@@ -318,6 +318,9 @@ pub struct App {
     pub mapping_status: Option<String>,
     /// Whether mappings have unsaved changes
     pub mapping_dirty: bool,
+    /// Status message for daemon control (e.g. "Started", "Stopped", error)
+    /// (message, is_error, timestamp for auto-clear)
+    pub daemon_status_message: Option<(String, bool, Instant)>,
 }
 
 impl App {
@@ -440,6 +443,7 @@ impl App {
             hovered_mapping: None,
             mapping_status: None,
             mapping_dirty: false,
+            daemon_status_message: None,
         }
     }
 
@@ -1326,6 +1330,28 @@ impl App {
                 self.current_tab = Tab::About;
                 self.trigger_tab_effect = true;
             }
+            // Overview daemon controls
+            KeyCode::Char('s') if self.current_tab == Tab::Overview => {
+                self.start_daemon();
+            }
+            KeyCode::Char('x') if self.current_tab == Tab::Overview => {
+                self.stop_daemon();
+            }
+            KeyCode::Char('r') if self.current_tab == Tab::Overview => {
+                self.daemon_status_message =
+                    Some(("Restarting...".to_string(), false, Instant::now()));
+                self.restart_daemon();
+                if self.config_error.is_some() {
+                    // restart_daemon sets config_error on failure
+                    self.daemon_status_message =
+                        Some((self.config_error.take().unwrap(), true, Instant::now()));
+                } else {
+                    self.daemon_status_message =
+                        Some(("Restarted".to_string(), false, Instant::now()));
+                    // Force immediate status refresh
+                    self.last_status_refresh = Instant::now() - std::time::Duration::from_secs(10);
+                }
+            }
             // Account navigation (when on Accounts tab)
             KeyCode::Up | KeyCode::Char('k') if self.current_tab == Tab::Accounts => {
                 if self.account_selected > 0 {
@@ -1849,6 +1875,143 @@ impl App {
         // Reload config fields to reflect saved state
         self.config_fields =
             super::config_editor::build_config_fields(&crate::config::get_config());
+    }
+
+    /// Start the daemon (when it's not running)
+    pub fn start_daemon(&mut self) {
+        use std::fs::OpenOptions;
+        use std::process::Command;
+
+        // Check if already running
+        if self.get_cached_server_status().is_running() {
+            self.daemon_status_message =
+                Some(("Already running".to_string(), true, Instant::now()));
+            return;
+        }
+
+        let config = crate::config::get_config();
+        let config_dir = crate::config::Config::dir();
+        let pid_path = config_dir.join("agcp.pid");
+        let log_path = config_dir.join("agcp.log");
+
+        let exe = std::env::current_exe().unwrap_or_else(|_| "agcp".into());
+
+        // Open log file for output redirection
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let log_file = match OpenOptions::new().create(true).append(true).open(&log_path) {
+            Ok(f) => f,
+            Err(_) => {
+                self.daemon_status_message =
+                    Some(("Failed to open log file".to_string(), true, Instant::now()));
+                return;
+            }
+        };
+
+        let mut cmd = Command::new(&exe);
+        cmd.arg("--foreground");
+        cmd.args(["--port", &config.server.port.to_string()]);
+        cmd.args(["--host", &config.server.host]);
+        if config.logging.debug {
+            cmd.arg("--debug");
+        }
+        if config.accounts.fallback {
+            cmd.arg("--fallback");
+        }
+
+        cmd.stdout(log_file.try_clone().unwrap_or(log_file));
+        if let Ok(stderr_file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+            cmd.stderr(stderr_file);
+        }
+
+        // Detach from terminal
+        #[cfg(unix)]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+
+        match cmd.spawn() {
+            Ok(child) => {
+                let _ = std::fs::write(&pid_path, child.id().to_string());
+                self.daemon_status_message = Some(("Started".to_string(), false, Instant::now()));
+                // Force immediate status refresh
+                self.last_status_refresh = Instant::now() - std::time::Duration::from_secs(10);
+            }
+            Err(e) => {
+                self.daemon_status_message =
+                    Some((format!("Failed to start: {}", e), true, Instant::now()));
+            }
+        }
+    }
+
+    /// Stop the daemon (when it's running)
+    pub fn stop_daemon(&mut self) {
+        let config_dir = crate::config::Config::dir();
+        let pid_path = config_dir.join("agcp.pid");
+
+        let pid_str = match std::fs::read_to_string(&pid_path) {
+            Ok(s) => s,
+            Err(_) => {
+                self.daemon_status_message =
+                    Some(("Not running".to_string(), true, Instant::now()));
+                return;
+            }
+        };
+
+        let pid: i32 = match pid_str.trim().parse() {
+            Ok(p) => p,
+            Err(_) => {
+                let _ = std::fs::remove_file(&pid_path);
+                self.daemon_status_message =
+                    Some(("Not running".to_string(), true, Instant::now()));
+                return;
+            }
+        };
+
+        // Check if actually alive
+        #[cfg(unix)]
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        #[cfg(not(unix))]
+        let alive = true;
+
+        if !alive {
+            let _ = std::fs::remove_file(&pid_path);
+            self.daemon_status_message = Some(("Not running".to_string(), true, Instant::now()));
+            return;
+        }
+
+        // Send SIGTERM
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F"])
+                .status();
+        }
+
+        // Wait for process to stop (up to 2 seconds)
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            #[cfg(unix)]
+            {
+                if unsafe { libc::kill(pid, 0) } != 0 {
+                    break;
+                }
+            }
+        }
+
+        let _ = std::fs::remove_file(&pid_path);
+        self.daemon_status_message = Some(("Stopped".to_string(), false, Instant::now()));
+        // Force immediate status refresh
+        self.last_status_refresh = Instant::now() - std::time::Duration::from_secs(10);
     }
 
     /// Update scrollbar state to match current scroll position

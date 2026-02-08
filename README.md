@@ -188,8 +188,9 @@ AGCP includes a terminal UI for monitoring and configuration (`agcp tui`):
 Features:
 - **Overview** - Real-time request rate, response times, account status
 - **Logs** - Syntax-highlighted log viewer with scrolling
-- **Accounts** - Manage and monitor account quota
+- **Accounts** - Manage and monitor account quota (search with `/`, sort with `s`)
 - **Config** - Edit configuration interactively
+- **Mappings** - Configure model name mappings with presets and glob rules
 - **Quota** - Visual quota usage with donut charts
 
 ## Model Aliases
@@ -201,10 +202,9 @@ For convenience, you can use these short aliases:
 | `opus` | claude-opus-4-6-thinking |
 | `sonnet` | claude-sonnet-4-5 |
 | `sonnet-thinking` | claude-sonnet-4-5-thinking |
-| `flash` | gemini-2.5-flash |
-| `pro` | gemini-2.5-pro |
-| `3-flash` | gemini-3-flash |
-| `3-pro` | gemini-3-pro-high |
+| `flash` | gemini-3-flash |
+| `pro` | gemini-3-pro-high |
+| `gpt-oss` | gpt-oss-120b-medium |
 
 ## Supported Models
 
@@ -215,14 +215,12 @@ For convenience, you can use these short aliases:
 - `claude-sonnet-4-5-thinking`
 
 ### Gemini Models
-- `gemini-2.5-flash`
-- `gemini-2.5-flash-lite`
-- `gemini-2.5-flash-thinking`
-- `gemini-2.5-pro`
 - `gemini-3-flash`
 - `gemini-3-pro-high`
-- `gemini-3-pro-image`
 - `gemini-3-pro-low`
+
+### Other Models
+- `gpt-oss-120b-medium`
 
 ## Configuration
 

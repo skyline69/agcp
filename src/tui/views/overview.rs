@@ -40,7 +40,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Row 3: Active Account | Model Usage
     // Row 4: Recent Activity
     let main_chunks = Layout::vertical([
-        Constraint::Length(6),  // Status + Stats row
+        Constraint::Length(7),  // Status + Stats row (5 lines + borders)
         Constraint::Length(10), // Request Rate Chart (needs more height for axes)
         Constraint::Length(5),  // Account + Model Usage
         Constraint::Fill(1),    // Recent Activity
@@ -52,7 +52,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         .split(main_chunks[0]);
 
     // Status panel - use daemon uptime from logs
-    let status_panel = StatusPanel::new(status, config.host(), config.port(), uptime);
+    let status_panel = StatusPanel::new(
+        status,
+        config.host(),
+        config.port(),
+        uptime,
+        app.daemon_status_message.as_ref(),
+    );
     frame.render_widget(status_panel, top_chunks[0]);
 
     // Stats panel - comprehensive stats
