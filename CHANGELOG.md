@@ -3,6 +3,37 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.1.0] - 2026-02-08
+
+
+### Bug Fixes
+
+- Exclude auto-generated changelog commits from git-cliff output ([8e3a168](https://github.com/skyline69/agcp/commit/8e3a1687afaede4a91f44a1244f32240db2be75e)) — Ö. Efe D.
+- Subscription tier detection, TUI log path on macOS, and lazy startup performance ([ee42ee4](https://github.com/skyline69/agcp/commit/ee42ee4eb32d346ba9f4fbefd411484db776e6d9)) — Ö. Efe D.
+- Per-account quota fetching and display in TUI ([3a3c914](https://github.com/skyline69/agcp/commit/3a3c91437aeebc52a8f052a20901bf2d2dcd3ed3)) — Ö. Efe D.
+- Daemon restart from Config tab using correct launch method ([e7e95f7](https://github.com/skyline69/agcp/commit/e7e95f7bceac975804bc7139975af0676a822501)) — Ö. Efe D.
+- Update model list to match available models, add GPT-OSS 120B ([121b050](https://github.com/skyline69/agcp/commit/121b050b2790c4900e4f8f7ba831729af9fd9647)) — Ö. Efe D.
+- Use PID file check instead of TCP probe for server status ([37e139a](https://github.com/skyline69/agcp/commit/37e139ad73a8d17b42ebe1e78f236916b92675bb)) — Ö. Efe D.
+- Unused variable on Windows ([09cc712](https://github.com/skyline69/agcp/commit/09cc712b3812019b97cca52ece78ecdb321befaf)) — Ö. Efe D.
+- Correct binary size to ~3MB ([acb7e79](https://github.com/skyline69/agcp/commit/acb7e797f5920b2acde54b0cde5468fcee79a8ce)) — Ö. Efe D.
+
+
+### Features
+
+- Add log filtering, search, and account filter to TUI Logs tab ([9fdf332](https://github.com/skyline69/agcp/commit/9fdf332b36404260148c3ce23ea7c3a36850fe27)) — Ö. Efe D.
+- Add tooltips to Config tab fields ([61995b1](https://github.com/skyline69/agcp/commit/61995b177f01f65f13ad62ddeee9f8163ff2db40)) — Ö. Efe D.
+- Add search and sort to Accounts tab ([60ed1ca](https://github.com/skyline69/agcp/commit/60ed1ca17ce898b40c558e622b3e97a726f91e04)) — Ö. Efe D.
+- Add Mappings tab with presets, glob rules, and background task model ([3f25f8a](https://github.com/skyline69/agcp/commit/3f25f8a2642867cc9dcc0d346fce628401d2ebf4)) — Ö. Efe D.
+- Add daemon start/stop/restart controls to Overview tab, update docs ([6e6e8cb](https://github.com/skyline69/agcp/commit/6e6e8cb0d9bb28f72cd3b7c3e692a2f5a908a36b)) — Ö. Efe D.
+
+
+### Miscellaneous
+
+- Update version ([7efd77b](https://github.com/skyline69/agcp/commit/7efd77b2c5c1062d5ed7361acfd336590881a41e)) — Ö. Efe D.
+- Format code ([76eac4d](https://github.com/skyline69/agcp/commit/76eac4da933e40e33b369952122586e57b8a4719)) — Ö. Efe D.
+- Format code ([371f24d](https://github.com/skyline69/agcp/commit/371f24de37fcbe90a16c5de484b392da5cb8f568)) — Ö. Efe D.
+
+
 ## [v1.0.1] - 2026-02-07
 
 
@@ -12,13 +43,6 @@ All notable changes to this project will be documented in this file.
 - Remove redundant mv in deb build step ([ce7d052](https://github.com/skyline69/agcp/commit/ce7d052279b5c09cd7fd416fe5a4da5942e5b42e)) — Ö. Efe D.
 - Use --unreleased for release changelog generation ([271289f](https://github.com/skyline69/agcp/commit/271289ff5a5e98aff348620c672fed93c427610a)) — Ö. Efe D.
 - Write PKGBUILD to workspace instead of /tmp for Docker compatibility ([0f4b9da](https://github.com/skyline69/agcp/commit/0f4b9da733ec6bebf4174bc9bf7b663748ae7f06)) — Ö. Efe D.
-
-
-### Documentation
-
-- Update changelog for v1.0.1 ([cc0ebfa](https://github.com/skyline69/agcp/commit/cc0ebfa3cef52fbe20a40ef6f5939a3eecb8cade)) — github-actions[bot]
-- Update changelog for v1.0.1 ([04b0ff7](https://github.com/skyline69/agcp/commit/04b0ff7e188116f1eb4181b8ddb5557907e3ae3c)) — github-actions[bot]
-- Update changelog for v1.0.1 ([06aafa5](https://github.com/skyline69/agcp/commit/06aafa551f350ec4e068b8673c634b4e0bca08e3)) — github-actions[bot]
 
 
 ### Miscellaneous
