@@ -211,17 +211,3 @@ pub async fn discover_project_and_tier(
         last_error.unwrap_or_else(|| "unknown error".to_string())
     ))))
 }
-
-/// Legacy function for backwards compatibility - just returns project ID
-pub async fn discover_project(
-    http_client: &HttpClient,
-    access_token: &str,
-    existing_project_id: Option<&str>,
-) -> Result<String> {
-    let result = discover_project_and_tier(http_client, access_token, existing_project_id).await?;
-    result.project_id.ok_or_else(|| {
-        Error::Auth(AuthError::RefreshFailed(
-            "No project ID discovered".to_string(),
-        ))
-    })
-}

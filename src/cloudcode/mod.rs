@@ -7,7 +7,7 @@ pub mod response;
 pub mod sse;
 
 pub use client::CloudCodeClient;
-pub use discover::{discover_project, discover_project_and_tier};
+pub use discover::discover_project_and_tier;
 pub use quota::{fetch_model_quotas, render_quota_display};
 pub use request::build_request;
 pub use response::parse_response;

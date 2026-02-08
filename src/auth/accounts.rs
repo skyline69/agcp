@@ -442,10 +442,67 @@ impl AccountStore {
             existing.enabled = true;
             existing.is_invalid = false;
             existing.invalid_reason = None;
+            if account.project_id.is_some() {
+                existing.project_id = account.project_id;
+            }
+            if account.subscription_tier.is_some() {
+                existing.subscription_tier = account.subscription_tier;
+            }
+            if account.access_token.is_some() {
+                existing.access_token = account.access_token;
+                existing.access_token_expires = account.access_token_expires;
+            }
             tracing::info!(email = %existing.email, "Updated existing account");
         } else {
             tracing::info!(email = %account.email, "Added new account");
             self.accounts.push(account);
+        }
+    }
+
+    /// Refresh subscription tiers for all enabled accounts by querying the API.
+    /// Updates the store in-place and saves to disk if any tiers changed.
+    pub async fn refresh_subscription_tiers(&mut self, http_client: &super::HttpClient) {
+        let mut changed = false;
+        for account in self
+            .accounts
+            .iter_mut()
+            .filter(|a| a.enabled && !a.is_invalid)
+        {
+            let access_token = match account.get_access_token(http_client).await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(email = %account.email, error = %e, "Failed to get token for tier refresh");
+                    continue;
+                }
+            };
+            let existing_project = account.project_id.as_deref();
+            match crate::cloudcode::discover_project_and_tier(
+                http_client,
+                &access_token,
+                existing_project,
+            )
+            .await
+            {
+                Ok(result) => {
+                    if result.subscription_tier.is_some()
+                        && result.subscription_tier != account.subscription_tier
+                    {
+                        tracing::info!(
+                            email = %account.email,
+                            tier = ?result.subscription_tier,
+                            "Updated subscription tier"
+                        );
+                        account.subscription_tier = result.subscription_tier;
+                        changed = true;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(email = %account.email, error = %e, "Failed to refresh tier");
+                }
+            }
+        }
+        if changed && let Err(e) = self.save() {
+            tracing::warn!(error = %e, "Failed to save updated tiers");
         }
     }
 

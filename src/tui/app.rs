@@ -185,6 +185,8 @@ pub struct App {
     pub startup_warnings: Vec<super::widgets::StartupWarning>,
     /// Whether to show the startup warnings popup
     pub show_startup_warnings: bool,
+    /// Receiver for background startup warnings collection
+    startup_warnings_receiver: Option<mpsc::Receiver<Vec<super::widgets::StartupWarning>>>,
     /// About page: cached inner area for mouse detection
     pub about_area: Rect,
     /// About page: whether the GitHub link is hovered
@@ -193,6 +195,8 @@ pub struct App {
     pub update_status: UpdateStatus,
     /// Receiver for background update check result
     update_receiver: Option<mpsc::Receiver<UpdateStatus>>,
+    /// Receiver for background subscription tier refresh
+    tier_refresh_receiver: Option<mpsc::Receiver<()>>,
     /// Cached server status (refreshed every 2 seconds)
     pub cached_server_status: super::data::ServerStatus,
     /// Last time server status was checked
@@ -221,20 +225,7 @@ impl App {
 
         let log_count = logs.len();
 
-        // Collect startup warnings
-        let startup_warnings = super::widgets::startup_warnings::collect_startup_warnings();
-        let show_startup_warnings = !startup_warnings.is_empty();
-
         let data = super::data::DataProvider::new();
-        let initial_status = data.get_server_status();
-
-        // Compute initial cached stats from startup logs
-        let now = super::data::current_time_secs();
-        let (initial_request_count, initial_model_usage) =
-            super::data::count_requests_from_logs(&logs);
-        let initial_rate_history = super::data::build_rate_history(&logs, now);
-        let initial_avg_response_ms = super::data::calculate_avg_response_time(&logs);
-        let initial_requests_per_min = super::data::calculate_requests_per_min(&logs, now);
 
         Self {
             running: true,
@@ -254,7 +245,7 @@ impl App {
             trigger_tab_effect: false,
             animation_time_ms: 0,
             daemon_start_time,
-            last_log_refresh: Instant::now(),
+            last_log_refresh: Instant::now() - Duration::from_secs(1),
             tab_areas: Vec::new(),
             logs_area: Rect::default(),
             scrollbar_area: Rect::default(),
@@ -279,19 +270,23 @@ impl App {
             config_edit_buffer: String::new(),
             config_error: None,
             config_needs_restart: false,
-            startup_warnings,
-            show_startup_warnings,
+            // Startup warnings deferred -- populated by background thread
+            startup_warnings: Vec::new(),
+            show_startup_warnings: false,
+            startup_warnings_receiver: None,
             about_area: Rect::default(),
             about_link_hovered: false,
             update_status: UpdateStatus::NotChecked,
             update_receiver: None,
-            cached_server_status: initial_status,
-            last_status_refresh: Instant::now(),
-            cached_request_count: initial_request_count,
-            cached_model_usage: initial_model_usage,
-            cached_rate_history: initial_rate_history,
-            cached_avg_response_ms: initial_avg_response_ms,
-            cached_requests_per_min: initial_requests_per_min,
+            tier_refresh_receiver: None,
+            // Server status deferred -- first real check happens via get_cached_server_status()
+            cached_server_status: super::data::ServerStatus::Running,
+            last_status_refresh: Instant::now() - Duration::from_secs(10),
+            cached_request_count: 0,
+            cached_model_usage: Vec::new(),
+            cached_rate_history: Vec::new(),
+            cached_avg_response_ms: None,
+            cached_requests_per_min: 0.0,
             cached_uptime: String::from("00:00:00"),
             cached_tabs_area: Rect::default(),
         }
@@ -358,6 +353,74 @@ impl App {
         self.accounts = self.data.get_accounts();
         if self.account_selected >= self.accounts.len() {
             self.account_selected = self.accounts.len().saturating_sub(1);
+        }
+    }
+
+    /// Spawn a background thread to refresh subscription tiers from API
+    fn spawn_tier_refresh(&mut self) {
+        if self.tier_refresh_receiver.is_some() {
+            return; // Already in progress
+        }
+
+        let (tx, rx) = mpsc::channel();
+        self.tier_refresh_receiver = Some(rx);
+
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(_) => return,
+            };
+            rt.block_on(async {
+                if let Ok(mut store) = crate::auth::accounts::AccountStore::load() {
+                    let http_client = crate::auth::HttpClient::new();
+                    store.refresh_subscription_tiers(&http_client).await;
+                }
+            });
+            let _ = tx.send(());
+        });
+    }
+
+    /// Poll for tier refresh completion and reload accounts if done
+    fn poll_tier_refresh(&mut self) {
+        if let Some(ref receiver) = self.tier_refresh_receiver {
+            match receiver.try_recv() {
+                Ok(()) | Err(mpsc::TryRecvError::Disconnected) => {
+                    self.tier_refresh_receiver = None;
+                    self.refresh_accounts();
+                }
+                Err(mpsc::TryRecvError::Empty) => {} // Still in progress
+            }
+        }
+    }
+
+    /// Spawn startup warnings collection in a background thread
+    fn spawn_startup_warnings(&mut self) {
+        let (tx, rx) = mpsc::channel();
+        self.startup_warnings_receiver = Some(rx);
+
+        std::thread::spawn(move || {
+            let warnings = super::widgets::startup_warnings::collect_startup_warnings();
+            let _ = tx.send(warnings);
+        });
+    }
+
+    /// Poll for startup warnings completion
+    fn poll_startup_warnings(&mut self) {
+        if let Some(ref receiver) = self.startup_warnings_receiver {
+            match receiver.try_recv() {
+                Ok(warnings) => {
+                    self.show_startup_warnings = !warnings.is_empty();
+                    self.startup_warnings = warnings;
+                    self.startup_warnings_receiver = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.startup_warnings_receiver = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {} // Still in progress
+            }
         }
     }
 
@@ -1249,6 +1312,8 @@ pub fn run() -> io::Result<()> {
 
     // Create app state
     let mut app = App::new();
+    app.spawn_tier_refresh();
+    app.spawn_startup_warnings();
     let mut last_frame = Instant::now();
 
     // Main loop
@@ -1265,6 +1330,12 @@ pub fn run() -> io::Result<()> {
 
         // Refresh quota data periodically (every 60 seconds)
         app.maybe_refresh_quota();
+
+        // Poll for background tier refresh completion
+        app.poll_tier_refresh();
+
+        // Poll for background startup warnings
+        app.poll_startup_warnings();
 
         // Draw
         terminal.draw(|frame| {

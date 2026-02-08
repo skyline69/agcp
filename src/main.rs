@@ -599,19 +599,33 @@ async fn run_server(config: Config) {
     if let Some(account) = first_enabled {
         match account.get_access_token(&http_client).await {
             Ok(access_token) => {
-                // Try to discover/update project ID for this account
+                // Try to discover/update project ID and subscription tier
                 let existing_project = account.project_id.as_deref();
-                match cloudcode::discover_project(&http_client, &access_token, existing_project)
-                    .await
+                match cloudcode::discover_project_and_tier(
+                    &http_client,
+                    &access_token,
+                    existing_project,
+                )
+                .await
                 {
-                    Ok(project_id) => {
-                        if account.project_id.as_deref() != Some(&project_id) {
+                    Ok(result) => {
+                        if let Some(ref project_id) = result.project_id
+                            && account.project_id.as_deref() != Some(project_id)
+                        {
                             info!(
                                 email = %account.email,
                                 project_id = %project_id,
                                 "Updated project ID from loadCodeAssist"
                             );
-                            account.project_id = Some(project_id);
+                            account.project_id = result.project_id.clone();
+                        }
+                        if result.subscription_tier != account.subscription_tier {
+                            info!(
+                                email = %account.email,
+                                tier = ?result.subscription_tier,
+                                "Updated subscription tier from loadCodeAssist"
+                            );
+                            account.subscription_tier = result.subscription_tier;
                         }
                     }
                     Err(e) => {
@@ -2215,7 +2229,7 @@ async fn run_accounts_command(args: &[String]) {
 
     match subcommand {
         "list" | "ls" => {
-            let store = match AccountStore::load() {
+            let mut store = match AccountStore::load() {
                 Ok(s) => s,
                 Err(e) => {
                     let err_str = e.to_string().to_lowercase();
@@ -2244,6 +2258,10 @@ async fn run_accounts_command(args: &[String]) {
                 println!();
                 return;
             }
+
+            // Refresh subscription tiers from API
+            let http_client = HttpClient::new();
+            store.refresh_subscription_tiers(&http_client).await;
 
             println!();
             println!(

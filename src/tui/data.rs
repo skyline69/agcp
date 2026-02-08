@@ -410,9 +410,6 @@ impl DataProvider {
 
     /// Get the log file path
     pub fn get_log_path() -> PathBuf {
-        let config_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("agcp");
-        config_dir.join("agcp.log")
+        crate::config::Config::dir().join("agcp.log")
     }
 }
