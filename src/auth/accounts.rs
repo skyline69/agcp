@@ -177,6 +177,15 @@ impl Account {
             .unwrap_or(1.0)
     }
 
+    /// Get average quota fraction across all models (defaults to 1.0 if no data)
+    pub fn get_average_quota_fraction(&self) -> f64 {
+        if self.quota.is_empty() {
+            return 1.0;
+        }
+        let total: f64 = self.quota.values().map(|q| q.remaining_fraction).sum();
+        total / self.quota.len() as f64
+    }
+
     /// Get effective quota threshold for a model
     ///
     /// Priority: per-model threshold > per-account threshold > global threshold

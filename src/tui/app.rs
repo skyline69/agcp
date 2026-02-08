@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -152,14 +152,15 @@ pub struct App {
     pub hovered_account: Option<usize>,
     /// Hovered config field index (None if not hovering any field)
     pub hovered_config: Option<usize>,
-    /// Cached quota data fetched from API
-    pub quota_data: Vec<crate::cloudcode::quota::ModelQuota>,
+    /// Cached quota data fetched from API, keyed by account ID
+    pub quota_data: HashMap<String, Vec<crate::cloudcode::quota::ModelQuota>>,
     /// Last time quota was refreshed
     last_quota_refresh: Instant,
     /// Whether quota fetch is in progress (to avoid duplicate fetches)
     quota_fetch_pending: bool,
     /// Receiver for background quota fetch results
-    quota_receiver: Option<mpsc::Receiver<Vec<crate::cloudcode::quota::ModelQuota>>>,
+    quota_receiver:
+        Option<mpsc::Receiver<HashMap<String, Vec<crate::cloudcode::quota::ModelQuota>>>>,
     /// Scroll offset in recent activity (0 = bottom/newest)
     pub activity_scroll: usize,
     /// Whether to auto-scroll recent activity to bottom
@@ -287,7 +288,7 @@ impl App {
             hovered_tab: None,
             hovered_account: None,
             hovered_config: None,
-            quota_data: Vec::new(),
+            quota_data: HashMap::new(),
             last_quota_refresh: Instant::now() - Duration::from_secs(120), // Trigger immediate fetch
             quota_fetch_pending: false,
             quota_receiver: None,
@@ -713,32 +714,94 @@ impl App {
         false
     }
 
-    /// Fetch quota data synchronously (blocking)
+    /// Fetch quota data for all enabled accounts synchronously (blocking)
     /// Can be called from any thread — creates its own tokio runtime if needed
-    fn fetch_quota_blocking() -> Result<Vec<crate::cloudcode::quota::ModelQuota>, String> {
+    fn fetch_quota_blocking()
+    -> Result<HashMap<String, Vec<crate::cloudcode::quota::ModelQuota>>, String> {
         // Create a new runtime for this thread (works from any context)
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| format!("Failed to create runtime: {}", e))?;
 
         rt.block_on(async {
-            // Load account
-            let mut account = crate::auth::accounts::Account::load()
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "No account configured".to_string())?;
+            let store = crate::auth::accounts::AccountStore::load().map_err(|e| e.to_string())?;
 
             let http_client = crate::auth::HttpClient::new();
-            let access_token = account
-                .get_access_token(&http_client)
-                .await
-                .map_err(|e| e.to_string())?;
+            let mut result = HashMap::new();
 
-            crate::cloudcode::fetch_model_quotas(
-                &http_client,
-                &access_token,
-                account.project_id.as_deref(),
-            )
-            .await
+            for account in &store.accounts {
+                if !account.enabled || account.is_invalid {
+                    continue;
+                }
+
+                let mut account_clone = account.clone();
+                let access_token = match account_clone.get_access_token(&http_client).await {
+                    Ok(token) => token,
+                    Err(_) => continue,
+                };
+
+                match crate::cloudcode::fetch_model_quotas(
+                    &http_client,
+                    &access_token,
+                    account.project_id.as_deref(),
+                )
+                .await
+                {
+                    Ok(quotas) => {
+                        result.insert(account.id.clone(), quotas);
+                    }
+                    Err(_) => continue,
+                }
+            }
+
+            Ok(result)
         })
+    }
+
+    /// Get average quota fraction for a specific account
+    pub fn get_account_quota_fraction(&self, account_id: &str) -> Option<f64> {
+        self.quota_data.get(account_id).map(|quotas| {
+            if quotas.is_empty() {
+                1.0
+            } else {
+                let total: f64 = quotas.iter().map(|q| q.remaining_fraction).sum();
+                total / quotas.len() as f64
+            }
+        })
+    }
+
+    /// Get the active account's quota data (for Quota tab and Overview)
+    pub fn get_active_quota_data(&self) -> &[crate::cloudcode::quota::ModelQuota] {
+        // Find active account and return its quota data
+        for acc in &self.accounts {
+            if acc.is_active
+                && let Some(quotas) = self.quota_data.get(&acc.id)
+            {
+                return quotas;
+            }
+        }
+        // Fallback: return first available
+        self.quota_data
+            .values()
+            .next()
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get average quota fraction across all accounts (for Overview stats panel)
+    pub fn get_overall_quota_fraction(&self) -> Option<f64> {
+        if self.quota_data.is_empty() {
+            return None;
+        }
+        let all_quotas: Vec<f64> = self
+            .quota_data
+            .values()
+            .flat_map(|quotas| quotas.iter().map(|q| q.remaining_fraction))
+            .collect();
+        if all_quotas.is_empty() {
+            None
+        } else {
+            Some(all_quotas.iter().sum::<f64>() / all_quotas.len() as f64)
+        }
     }
 
     /// Toggle enabled state of selected account
@@ -1770,7 +1833,7 @@ fn render(frame: &mut Frame, app: &mut App, elapsed: Duration) {
             super::views::accounts::render(frame, content_area, app);
         }
         Tab::Config => super::views::config::render(frame, content_area, app),
-        Tab::Quota => super::views::quota::render(frame, content_area, &app.quota_data),
+        Tab::Quota => super::views::quota::render(frame, content_area, app.get_active_quota_data()),
         Tab::About => {
             // Trigger update check on first visit to About tab
             app.maybe_check_for_updates();

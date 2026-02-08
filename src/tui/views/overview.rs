@@ -28,13 +28,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         .count();
     let total_accounts = accounts.len();
 
-    // Calculate average quota from live data
-    let quota_remaining = if !app.quota_data.is_empty() {
-        let total: f64 = app.quota_data.iter().map(|q| q.remaining_fraction).sum();
-        Some(total / app.quota_data.len() as f64)
-    } else {
-        None
-    };
+    // Calculate average quota from live data (across all accounts)
+    let quota_remaining = app.get_overall_quota_fraction();
 
     // Use cached uptime string (refreshed every 500ms, not per frame)
     let uptime = &app.cached_uptime;
@@ -78,8 +73,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let mid_chunks = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(main_chunks[2]);
 
-    // Account panel - pass live quota data
-    let account_panel = AccountPanel::new(accounts, &app.quota_data);
+    // Account panel - pass active account's live quota data
+    let account_panel = AccountPanel::new(accounts, app.get_active_quota_data());
     frame.render_widget(account_panel, mid_chunks[0]);
 
     // Model Usage panel - uses model info parsed from logs

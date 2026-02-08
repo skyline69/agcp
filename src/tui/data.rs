@@ -411,7 +411,7 @@ impl DataProvider {
                 .map(|acc| AccountInfo {
                     id: acc.id.clone(),
                     email: acc.email.clone(),
-                    quota_fraction: acc.get_quota_fraction("default"),
+                    quota_fraction: acc.get_average_quota_fraction(),
                     is_active: store.active_account_id.as_ref() == Some(&acc.id),
                     enabled: acc.enabled,
                     is_invalid: acc.is_invalid,

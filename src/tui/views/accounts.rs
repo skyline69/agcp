@@ -79,14 +79,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 _ => ("FREE", Style::default().fg(Color::DarkGray)),
             };
 
-            // Quota bar using live data if available
-            let quota = if !app.quota_data.is_empty() {
-                // Calculate average from live quota
-                let total: f64 = app.quota_data.iter().map(|q| q.remaining_fraction).sum();
-                total / app.quota_data.len() as f64
-            } else {
-                acc.quota_fraction
-            };
+            // Quota bar using per-account live data if available
+            let quota = app
+                .get_account_quota_fraction(&acc.id)
+                .unwrap_or(acc.quota_fraction);
             let quota_bar = render_quota_bar(quota, 10);
             let quota_style = quota_color(quota);
 
