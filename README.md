@@ -29,7 +29,7 @@ A blazing-fast Rust proxy that translates Anthropic's Claude API to Google's Clo
 
 ## Why AGCP?
 
-- **Lightweight** - Single binary, minimal dependencies, ~5MB compiled
+- **Lightweight** - Single binary, minimal dependencies, ~3MB compiled
 - **Fast** - Written in Rust with async I/O, handles concurrent requests efficiently
 - **Simple** - Just `agcp login` and you're ready, no config files needed
 - **Powerful** - Multi-account support, response caching, smart load balancing
