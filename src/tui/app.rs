@@ -1329,17 +1329,97 @@ impl App {
 
     /// Restart the daemon
     pub fn restart_daemon(&mut self) {
+        use std::fs::OpenOptions;
         use std::process::Command;
 
-        // Stop the daemon first
-        let _ = Command::new("pkill").args(["-f", "agcp.*daemon"]).status();
+        let config = crate::config::get_config();
+        let config_dir = crate::config::Config::dir();
+        let pid_path = config_dir.join("agcp.pid");
+        let log_path = config_dir.join("agcp.log");
 
-        // Small delay to let it stop
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Step 1: Stop the running daemon via PID file
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
+            && let Ok(pid) = pid_str.trim().parse::<i32>()
+        {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string(), "/F"])
+                    .status();
+            }
 
-        // Start daemon in background
+            // Wait for process to stop (up to 3 seconds)
+            for _ in 0..30 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                #[cfg(unix)]
+                {
+                    if unsafe { libc::kill(pid, 0) } != 0 {
+                        break;
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&pid_path);
+
+        // Small delay to ensure port is released
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        // Step 2: Start new daemon (same as run_daemon in main.rs)
         let exe = std::env::current_exe().unwrap_or_else(|_| "agcp".into());
-        let _ = Command::new(&exe).arg("daemon").spawn();
+
+        // Open log file for output redirection
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let log_file = match OpenOptions::new().create(true).append(true).open(&log_path) {
+            Ok(f) => f,
+            Err(_) => {
+                self.config_error = Some("Failed to open log file for daemon".to_string());
+                return;
+            }
+        };
+
+        let mut cmd = Command::new(&exe);
+        cmd.arg("--foreground");
+        cmd.args(["--port", &config.server.port.to_string()]);
+        cmd.args(["--host", &config.server.host]);
+        if config.logging.debug {
+            cmd.arg("--debug");
+        }
+        if config.accounts.fallback {
+            cmd.arg("--fallback");
+        }
+
+        cmd.stdout(log_file.try_clone().unwrap_or(log_file));
+        // Re-open for stderr since we may have consumed it
+        if let Ok(stderr_file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+            cmd.stderr(stderr_file);
+        }
+
+        // Detach from terminal
+        #[cfg(unix)]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+
+        match cmd.spawn() {
+            Ok(child) => {
+                // Write new PID
+                let _ = std::fs::write(&pid_path, child.id().to_string());
+            }
+            Err(e) => {
+                self.config_error = Some(format!("Failed to start daemon: {}", e));
+                return;
+            }
+        }
 
         self.config_needs_restart = false;
 
