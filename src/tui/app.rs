@@ -888,8 +888,12 @@ impl App {
             let acc_b = &accounts[b];
             match sort {
                 AccountSort::Default => a.cmp(&b),
-                AccountSort::EmailAsc => acc_a.email.to_lowercase().cmp(&acc_b.email.to_lowercase()),
-                AccountSort::EmailDesc => acc_b.email.to_lowercase().cmp(&acc_a.email.to_lowercase()),
+                AccountSort::EmailAsc => {
+                    acc_a.email.to_lowercase().cmp(&acc_b.email.to_lowercase())
+                }
+                AccountSort::EmailDesc => {
+                    acc_b.email.to_lowercase().cmp(&acc_a.email.to_lowercase())
+                }
                 AccountSort::Tier => {
                     let tier_rank = |acc: &super::data::AccountInfo| -> u8 {
                         match acc
@@ -910,16 +914,22 @@ impl App {
                     let qa = quota_data
                         .get(&acc_a.id)
                         .map(|qs| {
-                            if qs.is_empty() { 1.0 } else {
-                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>() / qs.len() as f64
+                            if qs.is_empty() {
+                                1.0
+                            } else {
+                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>()
+                                    / qs.len() as f64
                             }
                         })
                         .unwrap_or(acc_a.quota_fraction);
                     let qb = quota_data
                         .get(&acc_b.id)
                         .map(|qs| {
-                            if qs.is_empty() { 1.0 } else {
-                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>() / qs.len() as f64
+                            if qs.is_empty() {
+                                1.0
+                            } else {
+                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>()
+                                    / qs.len() as f64
                             }
                         })
                         .unwrap_or(acc_b.quota_fraction);
@@ -929,16 +939,22 @@ impl App {
                     let qa = quota_data
                         .get(&acc_a.id)
                         .map(|qs| {
-                            if qs.is_empty() { 1.0 } else {
-                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>() / qs.len() as f64
+                            if qs.is_empty() {
+                                1.0
+                            } else {
+                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>()
+                                    / qs.len() as f64
                             }
                         })
                         .unwrap_or(acc_a.quota_fraction);
                     let qb = quota_data
                         .get(&acc_b.id)
                         .map(|qs| {
-                            if qs.is_empty() { 1.0 } else {
-                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>() / qs.len() as f64
+                            if qs.is_empty() {
+                                1.0
+                            } else {
+                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>()
+                                    / qs.len() as f64
                             }
                         })
                         .unwrap_or(acc_b.quota_fraction);
