@@ -10,16 +10,12 @@ pub enum Model {
     ClaudeOpus4_5Thinking,
     ClaudeSonnet4_5,
     ClaudeSonnet4_5Thinking,
-    // Gemini 2.5 models
-    Gemini25Flash,
-    Gemini25FlashLite,
-    Gemini25FlashThinking,
-    Gemini25Pro,
     // Gemini 3 models
     Gemini3Flash,
     Gemini3ProHigh,
-    Gemini3ProImage,
     Gemini3ProLow,
+    // GPT-OSS models
+    GptOss120bMedium,
 }
 
 impl Model {
@@ -29,14 +25,10 @@ impl Model {
             Model::ClaudeOpus4_5Thinking => "claude-opus-4-5-thinking",
             Model::ClaudeSonnet4_5 => "claude-sonnet-4-5",
             Model::ClaudeSonnet4_5Thinking => "claude-sonnet-4-5-thinking",
-            Model::Gemini25Flash => "gemini-2.5-flash",
-            Model::Gemini25FlashLite => "gemini-2.5-flash-lite",
-            Model::Gemini25FlashThinking => "gemini-2.5-flash-thinking",
-            Model::Gemini25Pro => "gemini-2.5-pro",
             Model::Gemini3Flash => "gemini-3-flash",
             Model::Gemini3ProHigh => "gemini-3-pro-high",
-            Model::Gemini3ProImage => "gemini-3-pro-image",
             Model::Gemini3ProLow => "gemini-3-pro-low",
+            Model::GptOss120bMedium => "gpt-oss-120b-medium",
         }
     }
 
@@ -46,14 +38,10 @@ impl Model {
             Model::ClaudeOpus4_5Thinking,
             Model::ClaudeSonnet4_5,
             Model::ClaudeSonnet4_5Thinking,
-            Model::Gemini25Flash,
-            Model::Gemini25FlashLite,
-            Model::Gemini25FlashThinking,
-            Model::Gemini25Pro,
             Model::Gemini3Flash,
             Model::Gemini3ProHigh,
-            Model::Gemini3ProImage,
             Model::Gemini3ProLow,
+            Model::GptOss120bMedium,
         ]
     }
 }
@@ -64,6 +52,8 @@ pub fn get_model_family(model_name: &str) -> &'static str {
         "claude"
     } else if lower.contains("gemini") {
         "gemini"
+    } else if lower.contains("gpt-oss") {
+        "gpt-oss"
     } else {
         "unknown"
     }
@@ -96,23 +86,25 @@ pub fn resolve_model_alias(model: &str) -> &str {
         "opus-4-5" | "opus-4.5" | "claude-opus-4-5" => "claude-opus-4-5-thinking",
         "sonnet" | "claude-sonnet" => "claude-sonnet-4-5",
         "sonnet-thinking" | "claude-sonnet-thinking" => "claude-sonnet-4-5-thinking",
-        // Haiku is not available on Cloud Code, map to Gemini 3 Flash
+        // Haiku is not available, map to Gemini 3 Flash
         "haiku" | "claude-haiku" | "claude-haiku-4-5" => "gemini-3-flash",
 
         // OpenAI-style aliases (for Codex CLI compatibility)
         "gpt-5.2-codex" | "gpt-5.2" | "gpt-5" | "o3" | "o3-high" => "claude-opus-4-6-thinking",
 
-        // Gemini 2.5 aliases
-        "flash" | "gemini-flash" => "gemini-2.5-flash",
-        "flash-lite" | "gemini-flash-lite" => "gemini-2.5-flash-lite",
-        "flash-thinking" | "gemini-flash-thinking" => "gemini-2.5-flash-thinking",
-        "pro" | "gemini-pro" => "gemini-2.5-pro",
+        // Gemini 2.5 aliases (no longer available, redirect to Gemini 3)
+        "flash" | "gemini-flash" => "gemini-3-flash",
+        "flash-lite" | "gemini-flash-lite" => "gemini-3-flash",
+        "flash-thinking" | "gemini-flash-thinking" => "gemini-3-flash",
+        "pro" | "gemini-pro" => "gemini-3-pro-high",
 
         // Gemini 3 aliases
         "3-flash" | "gemini3-flash" => "gemini-3-flash",
         "3-pro" | "3-pro-high" | "gemini3-pro" => "gemini-3-pro-high",
         "3-pro-low" | "gemini3-pro-low" => "gemini-3-pro-low",
-        "3-pro-image" | "gemini3-pro-image" => "gemini-3-pro-image",
+
+        // GPT-OSS aliases
+        "gpt-oss" | "gpt-oss-120b" | "oss" => "gpt-oss-120b-medium",
 
         // No alias matched, return original
         _ => model,
@@ -131,6 +123,7 @@ pub fn get_fallback_model(model: &str) -> Option<&'static str> {
         "claude-opus-4-5-thinking" => Some("gemini-3-pro-high"),
         "claude-sonnet-4-5-thinking" => Some("gemini-3-flash"),
         "claude-sonnet-4-5" => Some("gemini-3-flash"),
+        "gpt-oss-120b-medium" => Some("gemini-3-flash"),
         _ => None,
     }
 }
@@ -278,11 +271,11 @@ impl MappingPreset {
     pub fn rules(&self) -> Vec<MappingRule> {
         match self {
             MappingPreset::Balanced => vec![
-                MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-2.5-flash".into() },
-                MappingRule { from: "claude-haiku-*".into(), to: "gemini-2.5-flash".into() },
+                MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-3-flash".into() },
+                MappingRule { from: "claude-haiku-*".into(), to: "gemini-3-flash".into() },
                 MappingRule { from: "gpt-4o*".into(), to: "gemini-3-flash".into() },
                 MappingRule { from: "gpt-4*".into(), to: "gemini-3-pro-high".into() },
-                MappingRule { from: "gpt-3.5*".into(), to: "gemini-2.5-flash".into() },
+                MappingRule { from: "gpt-3.5*".into(), to: "gemini-3-flash".into() },
                 MappingRule { from: "o1-*".into(), to: "gemini-3-pro-high".into() },
                 MappingRule { from: "o3-*".into(), to: "gemini-3-pro-high".into() },
                 MappingRule { from: "claude-3-opus-*".into(), to: "claude-opus-4-6-thinking".into() },
@@ -302,11 +295,11 @@ impl MappingPreset {
                 MappingRule { from: "claude-opus-4-*".into(), to: "claude-opus-4-6-thinking".into() },
             ],
             MappingPreset::Cost => vec![
-                MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-2.5-flash-lite".into() },
-                MappingRule { from: "claude-haiku-*".into(), to: "gemini-2.5-flash-lite".into() },
-                MappingRule { from: "gpt-4o*".into(), to: "gemini-2.5-flash".into() },
+                MappingRule { from: "claude-3-haiku-*".into(), to: "gpt-oss-120b-medium".into() },
+                MappingRule { from: "claude-haiku-*".into(), to: "gpt-oss-120b-medium".into() },
+                MappingRule { from: "gpt-4o*".into(), to: "gemini-3-flash".into() },
                 MappingRule { from: "gpt-4*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "gpt-3.5*".into(), to: "gemini-2.5-flash-lite".into() },
+                MappingRule { from: "gpt-3.5*".into(), to: "gpt-oss-120b-medium".into() },
                 MappingRule { from: "o1-*".into(), to: "gemini-3-flash".into() },
                 MappingRule { from: "o3-*".into(), to: "gemini-3-flash".into() },
                 MappingRule { from: "claude-3-opus-*".into(), to: "claude-sonnet-4-5".into() },
@@ -331,6 +324,7 @@ mod tests {
     fn test_model_family() {
         assert_eq!(get_model_family("claude-sonnet-4-5"), "claude");
         assert_eq!(get_model_family("gemini-3-flash"), "gemini");
+        assert_eq!(get_model_family("gpt-oss-120b-medium"), "gpt-oss");
         assert_eq!(get_model_family("unknown-model"), "unknown");
     }
 
@@ -340,7 +334,6 @@ mod tests {
         assert!(is_thinking_model("claude-opus-4-6-thinking"));
         assert!(is_thinking_model("claude-opus-4-5-thinking"));
         assert!(is_thinking_model("claude-sonnet-4-5-thinking"));
-        assert!(is_thinking_model("gemini-2.5-flash-thinking"));
 
         // All Gemini 3+ models are thinking models (matches JS behavior)
         assert!(is_thinking_model("gemini-3-flash"));
@@ -349,8 +342,7 @@ mod tests {
 
         // Non-thinking models
         assert!(!is_thinking_model("claude-sonnet-4-5")); // No "thinking" in name
-        assert!(!is_thinking_model("gemini-2.5-flash")); // Below version 3
-        assert!(!is_thinking_model("gemini-2.0-flash")); // Below version 3
+        assert!(!is_thinking_model("gpt-oss-120b-medium")); // Not a thinking model
     }
 
     #[test]
@@ -364,11 +356,15 @@ mod tests {
             "claude-sonnet-4-5-thinking"
         );
 
-        // Gemini aliases
-        assert_eq!(resolve_model_alias("flash"), "gemini-2.5-flash");
-        assert_eq!(resolve_model_alias("pro"), "gemini-2.5-pro");
+        // Gemini aliases (2.5 aliases now redirect to Gemini 3)
+        assert_eq!(resolve_model_alias("flash"), "gemini-3-flash");
+        assert_eq!(resolve_model_alias("pro"), "gemini-3-pro-high");
         assert_eq!(resolve_model_alias("3-flash"), "gemini-3-flash");
         assert_eq!(resolve_model_alias("3-pro"), "gemini-3-pro-high");
+
+        // GPT-OSS aliases
+        assert_eq!(resolve_model_alias("gpt-oss"), "gpt-oss-120b-medium");
+        assert_eq!(resolve_model_alias("oss"), "gpt-oss-120b-medium");
 
         // Full names should pass through unchanged
         assert_eq!(
@@ -379,7 +375,11 @@ mod tests {
             resolve_model_alias("claude-opus-4-5-thinking"),
             "claude-opus-4-5-thinking"
         );
-        assert_eq!(resolve_model_alias("gemini-2.5-flash"), "gemini-2.5-flash");
+        assert_eq!(resolve_model_alias("gemini-3-flash"), "gemini-3-flash");
+        assert_eq!(
+            resolve_model_alias("gpt-oss-120b-medium"),
+            "gpt-oss-120b-medium"
+        );
 
         // Unknown models pass through
         assert_eq!(resolve_model_alias("unknown-model"), "unknown-model");
@@ -408,6 +408,12 @@ mod tests {
         );
         assert_eq!(
             get_fallback_model("claude-sonnet-4-5-thinking"),
+            Some("gemini-3-flash")
+        );
+
+        // GPT-OSS fallback
+        assert_eq!(
+            get_fallback_model("gpt-oss-120b-medium"),
             Some("gemini-3-flash")
         );
 
@@ -448,7 +454,7 @@ mod tests {
     fn test_resolve_with_mappings() {
         let rules = vec![
             MappingRule { from: "gpt-4*".into(), to: "gemini-3-pro-high".into() },
-            MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-2.5-flash".into() },
+            MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-3-flash".into() },
         ];
 
         // User mapping takes priority
@@ -458,7 +464,7 @@ mod tests {
         );
         assert_eq!(
             resolve_with_mappings("claude-3-haiku-20240307", &rules, "gemini-3-flash"),
-            "gemini-2.5-flash"
+            "gemini-3-flash"
         );
 
         // No user mapping match -> falls through to hardcoded aliases

@@ -244,13 +244,13 @@ impl Default for CloudCodeConfig {
 /// ```toml
 /// [[mappings.rules]]
 /// from = "claude-3-haiku-*"
-/// to = "gemini-2.5-flash"
+/// to = "gemini-3-flash"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MappingRule {
     /// Glob pattern to match incoming model names (e.g. "claude-3-haiku-*", "gpt-4*")
     pub from: String,
-    /// Target model to resolve to (e.g. "gemini-2.5-flash")
+    /// Target model to resolve to (e.g. "gemini-3-flash")
     pub to: String,
 }
 

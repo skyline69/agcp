@@ -2280,7 +2280,7 @@ mod tests {
             "body should list Claude models: {body}"
         );
         assert!(
-            body.contains("gemini-2.5-flash"),
+            body.contains("gemini-3-flash"),
             "body should list Gemini models: {body}"
         );
     }
