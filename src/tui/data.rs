@@ -383,22 +383,71 @@ impl DataProvider {
         Self
     }
 
-    /// Check if server is actually running by probing the configured port
+    /// Check if the AGCP daemon is actually running by checking the PID file.
+    /// A TCP/HTTP probe is insufficient because other apps (e.g. Antigravity.app)
+    /// may also be listening on the same port with a compatible health endpoint.
     pub fn get_server_status(&self) -> ServerStatus {
-        use std::net::TcpStream;
-        use std::time::Duration;
+        let pid_path = crate::config::Config::dir().join("agcp.pid");
 
-        let config = crate::config::get_config();
-        let addr = format!("{}:{}", config.server.host, config.server.port);
+        // Read PID from file
+        let pid_str = match std::fs::read_to_string(&pid_path) {
+            Ok(s) => s,
+            Err(_) => return ServerStatus::Stopped, // No PID file = not running
+        };
 
-        match addr.parse() {
-            Ok(sock_addr) => {
-                match TcpStream::connect_timeout(&sock_addr, Duration::from_millis(100)) {
-                    Ok(_) => ServerStatus::Running,
-                    Err(_) => ServerStatus::Stopped,
-                }
+        let pid: i32 = match pid_str.trim().parse() {
+            Ok(p) => p,
+            Err(_) => return ServerStatus::Stopped, // Invalid PID file
+        };
+
+        // Check if the process is actually alive (signal 0 = existence check)
+        #[cfg(unix)]
+        {
+            if unsafe { libc::kill(pid, 0) } == 0 {
+                ServerStatus::Running
+            } else {
+                ServerStatus::Stopped
             }
-            Err(_) => ServerStatus::Stopped,
+        }
+
+        #[cfg(not(unix))]
+        {
+            // On non-Unix, fall back to HTTP health check
+            use std::io::{Read, Write};
+            use std::net::TcpStream;
+            use std::time::Duration;
+
+            let config = crate::config::get_config();
+            let addr = format!("{}:{}", config.server.host, config.server.port);
+            let sock_addr = match addr.parse() {
+                Ok(a) => a,
+                Err(_) => return ServerStatus::Stopped,
+            };
+            let mut stream =
+                match TcpStream::connect_timeout(&sock_addr, Duration::from_millis(200)) {
+                    Ok(s) => s,
+                    Err(_) => return ServerStatus::Stopped,
+                };
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
+            let request = format!(
+                "GET /health HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                addr
+            );
+            if stream.write_all(request.as_bytes()).is_err() {
+                return ServerStatus::Stopped;
+            }
+            let mut buf = [0u8; 512];
+            let n = match stream.read(&mut buf) {
+                Ok(n) => n,
+                Err(_) => return ServerStatus::Stopped,
+            };
+            let response = String::from_utf8_lossy(&buf[..n]);
+            if response.contains(r#""status":"ok""#) {
+                ServerStatus::Running
+            } else {
+                ServerStatus::Stopped
+            }
         }
     }
 
