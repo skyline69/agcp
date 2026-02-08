@@ -4,7 +4,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use crate::tui::app::App;
 use crate::tui::theme;
 
-/// Render the accounts view
+/// Render the accounts view with search bar and sort indicator
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .title(" Accounts ")
@@ -26,24 +26,63 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // Build lines for each account
-    let lines: Vec<Line> = app
-        .accounts
+    // Calculate toolbar height
+    let has_search = app.account_search_active || !app.account_search_query.is_empty();
+    let has_sort = app.account_sort != crate::tui::app::AccountSort::Default;
+    let toolbar_height: u16 = if has_search || has_sort { 2 } else { 0 };
+
+    let toolbar_area = Rect {
+        height: toolbar_height,
+        ..inner
+    };
+    let content_area = Rect {
+        y: inner.y + toolbar_height,
+        height: inner.height.saturating_sub(toolbar_height),
+        ..inner
+    };
+
+    // Render toolbar if active
+    if toolbar_height > 0 {
+        render_toolbar(frame, toolbar_area, app);
+    }
+
+    // Store content area for mouse click detection
+    app.accounts_area = content_area;
+
+    // Determine which accounts to display
+    let has_filter = app.has_active_account_filter();
+    let display_indices: Vec<usize> = if has_filter {
+        app.account_display_indices.clone()
+    } else {
+        (0..app.accounts.len()).collect()
+    };
+
+    if display_indices.is_empty() {
+        let no_match = Text::from("No accounts match the search.")
+            .style(theme::dim())
+            .centered();
+        frame.render_widget(no_match, content_area);
+        return;
+    }
+
+    // Build lines for displayed accounts
+    let lines: Vec<Line> = display_indices
         .iter()
         .enumerate()
-        .map(|(idx, acc)| {
-            let is_selected = idx == app.account_selected;
-            let is_hovered = app.hovered_account == Some(idx);
+        .map(|(display_idx, &real_idx)| {
+            let acc = &app.accounts[real_idx];
+            let is_selected = display_idx == app.account_selected;
+            let is_hovered = app.hovered_account == Some(display_idx);
 
             // Status icon
             let status_icon = if acc.is_invalid {
-                ("✗", theme::error())
+                ("\u{2717}", theme::error()) // ✗
             } else if !acc.enabled {
-                ("○", theme::dim())
+                ("\u{25cb}", theme::dim()) // ○
             } else if acc.is_active {
-                ("●", theme::success())
+                ("\u{25cf}", theme::success()) // ●
             } else {
-                ("○", theme::dim())
+                ("\u{25cb}", theme::dim()) // ○
             };
 
             // Selection indicator
@@ -105,7 +144,71 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines), content_area);
+}
+
+/// Render search bar and sort indicator
+fn render_toolbar(frame: &mut Frame, area: Rect, app: &App) {
+    if area.height == 0 {
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // First line: sort indicator + filter count
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::styled(" Sort: ", theme::dim()));
+    spans.push(Span::styled(
+        app.account_sort.label(),
+        if app.account_sort != crate::tui::app::AccountSort::Default {
+            Style::default()
+                .fg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            theme::dim()
+        },
+    ));
+    spans.push(Span::styled("(s)", Style::default().fg(Color::DarkGray)));
+
+    if app.has_active_account_filter() {
+        let displayed = app.account_display_indices.len();
+        let total = app.accounts.len();
+        spans.push(Span::styled(" \u{2502} ", theme::dim())); // │
+        spans.push(Span::styled(
+            format!("{}/{}", displayed, total),
+            Style::default().fg(theme::WARNING),
+        ));
+    }
+
+    lines.push(Line::from(spans));
+
+    // Second line: search bar (if active or has query)
+    if app.account_search_active || !app.account_search_query.is_empty() {
+        let mut search_spans: Vec<Span> = Vec::new();
+        search_spans.push(Span::styled(
+            " / ",
+            Style::default()
+                .fg(theme::PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ));
+        search_spans.push(Span::styled(
+            app.account_search_query.clone(),
+            if app.account_search_active {
+                Style::default().fg(theme::TEXT)
+            } else {
+                theme::dim()
+            },
+        ));
+        if app.account_search_active {
+            search_spans.push(Span::styled(
+                "\u{2588}", // █ block cursor
+                Style::default().fg(theme::PRIMARY),
+            ));
+        }
+        lines.push(Line::from(search_spans));
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn truncate_email(email: &str, max_len: usize) -> String {
@@ -119,7 +222,7 @@ fn truncate_email(email: &str, max_len: usize) -> String {
 fn render_quota_bar(fraction: f64, width: usize) -> String {
     let filled = (fraction * width as f64).round() as usize;
     let empty = width.saturating_sub(filled);
-    format!("{}{}", "█".repeat(filled), "░".repeat(empty))
+    format!("{}{}", "\u{2588}".repeat(filled), "\u{2591}".repeat(empty)) // █ and ░
 }
 
 fn quota_color(fraction: f64) -> Style {

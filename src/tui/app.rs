@@ -97,6 +97,47 @@ pub enum UpdateStatus {
     Error(String),
 }
 
+/// Sort mode for accounts list
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountSort {
+    /// Default order (as loaded)
+    Default,
+    /// Email A-Z
+    EmailAsc,
+    /// Email Z-A
+    EmailDesc,
+    /// By subscription tier (Ultra > Pro > Free)
+    Tier,
+    /// Quota remaining high to low
+    QuotaDesc,
+    /// Quota remaining low to high
+    QuotaAsc,
+}
+
+impl AccountSort {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Default => Self::EmailAsc,
+            Self::EmailAsc => Self::EmailDesc,
+            Self::EmailDesc => Self::Tier,
+            Self::Tier => Self::QuotaDesc,
+            Self::QuotaDesc => Self::QuotaAsc,
+            Self::QuotaAsc => Self::Default,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::EmailAsc => "Email A-Z",
+            Self::EmailDesc => "Email Z-A",
+            Self::Tier => "Tier",
+            Self::QuotaDesc => "Quota High-Low",
+            Self::QuotaAsc => "Quota Low-High",
+        }
+    }
+}
+
 /// Main application state
 pub struct App {
     pub running: bool,
@@ -118,6 +159,14 @@ pub struct App {
     pub accounts: Vec<super::data::AccountInfo>,
     /// Selected account index in accounts view
     pub account_selected: usize,
+    /// Account search active
+    pub account_search_active: bool,
+    /// Account search query
+    pub account_search_query: String,
+    /// Account sort mode
+    pub account_sort: AccountSort,
+    /// Filtered + sorted account indices (into self.accounts)
+    pub account_display_indices: Vec<usize>,
     /// Whether help overlay is visible
     pub show_help: bool,
     /// Whether startup animation has been triggered
@@ -271,6 +320,10 @@ impl App {
             log_tailer: LogTailer::new(&log_path),
             accounts: super::data::DataProvider::new().get_accounts(),
             account_selected: 0,
+            account_search_active: false,
+            account_search_query: String::new(),
+            account_sort: AccountSort::Default,
+            account_display_indices: Vec::new(),
             show_help: false,
             startup_done: false,
             prev_show_help: false,
@@ -804,9 +857,123 @@ impl App {
         }
     }
 
+    /// Rebuild the filtered and sorted account display indices
+    pub fn refilter_accounts(&mut self) {
+        self.account_display_indices.clear();
+
+        // Filter by search query
+        for (i, acc) in self.accounts.iter().enumerate() {
+            if !self.account_search_query.is_empty() {
+                let query = self.account_search_query.to_lowercase();
+                let email_match = acc.email.to_lowercase().contains(&query);
+                let tier_match = acc
+                    .subscription_tier
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains(&query);
+                if !email_match && !tier_match {
+                    continue;
+                }
+            }
+            self.account_display_indices.push(i);
+        }
+
+        // Sort
+        let sort = self.account_sort;
+        let quota_data = &self.quota_data;
+        let accounts = &self.accounts;
+        self.account_display_indices.sort_by(|&a, &b| {
+            let acc_a = &accounts[a];
+            let acc_b = &accounts[b];
+            match sort {
+                AccountSort::Default => a.cmp(&b),
+                AccountSort::EmailAsc => acc_a.email.to_lowercase().cmp(&acc_b.email.to_lowercase()),
+                AccountSort::EmailDesc => acc_b.email.to_lowercase().cmp(&acc_a.email.to_lowercase()),
+                AccountSort::Tier => {
+                    let tier_rank = |acc: &super::data::AccountInfo| -> u8 {
+                        match acc
+                            .subscription_tier
+                            .as_deref()
+                            .unwrap_or("")
+                            .to_lowercase()
+                            .as_str()
+                        {
+                            "ultra" => 0,
+                            "pro" => 1,
+                            _ => 2,
+                        }
+                    };
+                    tier_rank(acc_a).cmp(&tier_rank(acc_b))
+                }
+                AccountSort::QuotaDesc => {
+                    let qa = quota_data
+                        .get(&acc_a.id)
+                        .map(|qs| {
+                            if qs.is_empty() { 1.0 } else {
+                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>() / qs.len() as f64
+                            }
+                        })
+                        .unwrap_or(acc_a.quota_fraction);
+                    let qb = quota_data
+                        .get(&acc_b.id)
+                        .map(|qs| {
+                            if qs.is_empty() { 1.0 } else {
+                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>() / qs.len() as f64
+                            }
+                        })
+                        .unwrap_or(acc_b.quota_fraction);
+                    qb.partial_cmp(&qa).unwrap_or(std::cmp::Ordering::Equal)
+                }
+                AccountSort::QuotaAsc => {
+                    let qa = quota_data
+                        .get(&acc_a.id)
+                        .map(|qs| {
+                            if qs.is_empty() { 1.0 } else {
+                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>() / qs.len() as f64
+                            }
+                        })
+                        .unwrap_or(acc_a.quota_fraction);
+                    let qb = quota_data
+                        .get(&acc_b.id)
+                        .map(|qs| {
+                            if qs.is_empty() { 1.0 } else {
+                                qs.iter().map(|q| q.remaining_fraction).sum::<f64>() / qs.len() as f64
+                            }
+                        })
+                        .unwrap_or(acc_b.quota_fraction);
+                    qa.partial_cmp(&qb).unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }
+        });
+
+        // Clamp selection
+        if !self.account_display_indices.is_empty() {
+            self.account_selected = self
+                .account_selected
+                .min(self.account_display_indices.len() - 1);
+        }
+    }
+
+    /// Check if any account filter is active
+    pub fn has_active_account_filter(&self) -> bool {
+        !self.account_search_query.is_empty() || self.account_sort != AccountSort::Default
+    }
+
+    /// Get the real account index from display index
+    pub fn account_real_index(&self, display_idx: usize) -> Option<usize> {
+        if self.has_active_account_filter() {
+            self.account_display_indices.get(display_idx).copied()
+        } else {
+            Some(display_idx)
+        }
+    }
+
     /// Toggle enabled state of selected account
     fn toggle_account_enabled(&mut self) {
-        if let Some(acc) = self.accounts.get(self.account_selected)
+        let real_idx = self.account_real_index(self.account_selected);
+        if let Some(idx) = real_idx
+            && let Some(acc) = self.accounts.get(idx)
             && let Ok(mut store) = crate::auth::accounts::AccountStore::load()
             && let Some(account) = store.accounts.iter_mut().find(|a| a.id == acc.id)
         {
@@ -818,7 +985,9 @@ impl App {
 
     /// Set selected account as active
     fn set_active_account(&mut self) {
-        if let Some(acc) = self.accounts.get(self.account_selected)
+        let real_idx = self.account_real_index(self.account_selected);
+        if let Some(idx) = real_idx
+            && let Some(acc) = self.accounts.get(idx)
             && let Ok(mut store) = crate::auth::accounts::AccountStore::load()
         {
             store.active_account_id = Some(acc.id.clone());
@@ -890,6 +1059,28 @@ impl App {
                 KeyCode::Char(c) => {
                     self.log_search_query.push(c);
                     self.refilter_logs();
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle account search input when active
+        if self.account_search_active {
+            match code {
+                KeyCode::Esc => {
+                    self.account_search_active = false;
+                }
+                KeyCode::Enter => {
+                    self.account_search_active = false;
+                }
+                KeyCode::Backspace => {
+                    self.account_search_query.pop();
+                    self.refilter_accounts();
+                }
+                KeyCode::Char(c) => {
+                    self.account_search_query.push(c);
+                    self.refilter_accounts();
                 }
                 _ => {}
             }
@@ -993,7 +1184,12 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') if self.current_tab == Tab::Accounts => {
-                if self.account_selected < self.accounts.len().saturating_sub(1) {
+                let count = if self.has_active_account_filter() {
+                    self.account_display_indices.len()
+                } else {
+                    self.accounts.len()
+                };
+                if self.account_selected < count.saturating_sub(1) {
                     self.account_selected += 1;
                 }
             }
@@ -1008,6 +1204,22 @@ impl App {
             // Refresh accounts
             KeyCode::Char('r') if self.current_tab == Tab::Accounts => {
                 self.refresh_accounts();
+            }
+            // Account search
+            KeyCode::Char('/') if self.current_tab == Tab::Accounts => {
+                self.account_search_active = true;
+            }
+            // Account sort cycle
+            KeyCode::Char('s') if self.current_tab == Tab::Accounts => {
+                self.account_sort = self.account_sort.next();
+                self.refilter_accounts();
+            }
+            // Clear account filters
+            KeyCode::Char('c') if self.current_tab == Tab::Accounts => {
+                self.account_search_query.clear();
+                self.account_search_active = false;
+                self.account_sort = AccountSort::Default;
+                self.account_display_indices.clear();
             }
             // Log scrolling (when on Logs tab)
             KeyCode::Up | KeyCode::Char('k') if self.current_tab == Tab::Logs => {
@@ -1558,10 +1770,14 @@ impl App {
                     && self.is_in_rect(column, row, self.accounts_area)
                 {
                     // Calculate which account was clicked based on row
-                    let relative_row = row.saturating_sub(self.accounts_area.y + 1); // +1 for border
-                    let clicked_index = relative_row as usize;
-                    if clicked_index < self.accounts.len() {
-                        self.account_selected = clicked_index;
+                    let relative_row = row.saturating_sub(self.accounts_area.y) as usize;
+                    let count = if self.has_active_account_filter() {
+                        self.account_display_indices.len()
+                    } else {
+                        self.accounts.len()
+                    };
+                    if relative_row < count {
+                        self.account_selected = relative_row;
                     }
                 }
 
@@ -1643,10 +1859,14 @@ impl App {
         // Check account hover
         self.hovered_account = None;
         if self.current_tab == Tab::Accounts && self.is_in_rect(column, row, self.accounts_area) {
-            let relative_row = row.saturating_sub(self.accounts_area.y + 1);
-            let hovered_index = relative_row as usize;
-            if hovered_index < self.accounts.len() {
-                self.hovered_account = Some(hovered_index);
+            let relative_row = row.saturating_sub(self.accounts_area.y) as usize;
+            let count = if self.has_active_account_filter() {
+                self.account_display_indices.len()
+            } else {
+                self.accounts.len()
+            };
+            if relative_row < count {
+                self.hovered_account = Some(relative_row);
             }
         }
 

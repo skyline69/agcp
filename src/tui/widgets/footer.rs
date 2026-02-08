@@ -21,6 +21,9 @@ impl Footer {
 
         match tab {
             Tab::Accounts => {
+                binds.insert(2, ("c", "Clear"));
+                binds.insert(2, ("s", "Sort"));
+                binds.insert(2, ("/", "Search"));
                 binds.insert(2, ("r", "Refresh"));
                 binds.insert(2, ("e", "Toggle"));
                 binds.insert(2, ("Enter", "Activate"));
