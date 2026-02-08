@@ -174,7 +174,9 @@ pub fn glob_match(pattern: &str, input: &str) -> bool {
             input.ends_with(suffix)
         } else {
             // "claude-*-opus" — prefix + suffix match
-            input.starts_with(prefix) && input.ends_with(suffix) && input.len() >= prefix.len() + suffix.len()
+            input.starts_with(prefix)
+                && input.ends_with(suffix)
+                && input.len() >= prefix.len() + suffix.len()
         }
     } else {
         // Exact match (case-insensitive)
@@ -271,40 +273,130 @@ impl MappingPreset {
     pub fn rules(&self) -> Vec<MappingRule> {
         match self {
             MappingPreset::Balanced => vec![
-                MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "claude-haiku-*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "gpt-4o*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "gpt-4*".into(), to: "gemini-3-pro-high".into() },
-                MappingRule { from: "gpt-3.5*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "o1-*".into(), to: "gemini-3-pro-high".into() },
-                MappingRule { from: "o3-*".into(), to: "gemini-3-pro-high".into() },
-                MappingRule { from: "claude-3-opus-*".into(), to: "claude-opus-4-6-thinking".into() },
-                MappingRule { from: "claude-3-5-sonnet-*".into(), to: "claude-sonnet-4-5".into() },
-                MappingRule { from: "claude-opus-4-*".into(), to: "claude-opus-4-6-thinking".into() },
+                MappingRule {
+                    from: "claude-3-haiku-*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "claude-haiku-*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "gpt-4o*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "gpt-4*".into(),
+                    to: "gemini-3-pro-high".into(),
+                },
+                MappingRule {
+                    from: "gpt-3.5*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "o1-*".into(),
+                    to: "gemini-3-pro-high".into(),
+                },
+                MappingRule {
+                    from: "o3-*".into(),
+                    to: "gemini-3-pro-high".into(),
+                },
+                MappingRule {
+                    from: "claude-3-opus-*".into(),
+                    to: "claude-opus-4-6-thinking".into(),
+                },
+                MappingRule {
+                    from: "claude-3-5-sonnet-*".into(),
+                    to: "claude-sonnet-4-5".into(),
+                },
+                MappingRule {
+                    from: "claude-opus-4-*".into(),
+                    to: "claude-opus-4-6-thinking".into(),
+                },
             ],
             MappingPreset::Performance => vec![
-                MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "claude-haiku-*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "gpt-4o*".into(), to: "gemini-3-pro-high".into() },
-                MappingRule { from: "gpt-4*".into(), to: "gemini-3-pro-high".into() },
-                MappingRule { from: "gpt-3.5*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "o1-*".into(), to: "claude-opus-4-6-thinking".into() },
-                MappingRule { from: "o3-*".into(), to: "claude-opus-4-6-thinking".into() },
-                MappingRule { from: "claude-3-opus-*".into(), to: "claude-opus-4-6-thinking".into() },
-                MappingRule { from: "claude-3-5-sonnet-*".into(), to: "claude-sonnet-4-5-thinking".into() },
-                MappingRule { from: "claude-opus-4-*".into(), to: "claude-opus-4-6-thinking".into() },
+                MappingRule {
+                    from: "claude-3-haiku-*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "claude-haiku-*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "gpt-4o*".into(),
+                    to: "gemini-3-pro-high".into(),
+                },
+                MappingRule {
+                    from: "gpt-4*".into(),
+                    to: "gemini-3-pro-high".into(),
+                },
+                MappingRule {
+                    from: "gpt-3.5*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "o1-*".into(),
+                    to: "claude-opus-4-6-thinking".into(),
+                },
+                MappingRule {
+                    from: "o3-*".into(),
+                    to: "claude-opus-4-6-thinking".into(),
+                },
+                MappingRule {
+                    from: "claude-3-opus-*".into(),
+                    to: "claude-opus-4-6-thinking".into(),
+                },
+                MappingRule {
+                    from: "claude-3-5-sonnet-*".into(),
+                    to: "claude-sonnet-4-5-thinking".into(),
+                },
+                MappingRule {
+                    from: "claude-opus-4-*".into(),
+                    to: "claude-opus-4-6-thinking".into(),
+                },
             ],
             MappingPreset::Cost => vec![
-                MappingRule { from: "claude-3-haiku-*".into(), to: "gpt-oss-120b-medium".into() },
-                MappingRule { from: "claude-haiku-*".into(), to: "gpt-oss-120b-medium".into() },
-                MappingRule { from: "gpt-4o*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "gpt-4*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "gpt-3.5*".into(), to: "gpt-oss-120b-medium".into() },
-                MappingRule { from: "o1-*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "o3-*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "claude-3-opus-*".into(), to: "claude-sonnet-4-5".into() },
-                MappingRule { from: "claude-3-5-sonnet-*".into(), to: "gemini-3-flash".into() },
-                MappingRule { from: "claude-opus-4-*".into(), to: "claude-sonnet-4-5".into() },
+                MappingRule {
+                    from: "claude-3-haiku-*".into(),
+                    to: "gpt-oss-120b-medium".into(),
+                },
+                MappingRule {
+                    from: "claude-haiku-*".into(),
+                    to: "gpt-oss-120b-medium".into(),
+                },
+                MappingRule {
+                    from: "gpt-4o*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "gpt-4*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "gpt-3.5*".into(),
+                    to: "gpt-oss-120b-medium".into(),
+                },
+                MappingRule {
+                    from: "o1-*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "o3-*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "claude-3-opus-*".into(),
+                    to: "claude-sonnet-4-5".into(),
+                },
+                MappingRule {
+                    from: "claude-3-5-sonnet-*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
+                    from: "claude-opus-4-*".into(),
+                    to: "claude-sonnet-4-5".into(),
+                },
             ],
             MappingPreset::None | MappingPreset::Custom => vec![],
         }
@@ -453,8 +545,14 @@ mod tests {
     #[test]
     fn test_resolve_with_mappings() {
         let rules = vec![
-            MappingRule { from: "gpt-4*".into(), to: "gemini-3-pro-high".into() },
-            MappingRule { from: "claude-3-haiku-*".into(), to: "gemini-3-flash".into() },
+            MappingRule {
+                from: "gpt-4*".into(),
+                to: "gemini-3-pro-high".into(),
+            },
+            MappingRule {
+                from: "claude-3-haiku-*".into(),
+                to: "gemini-3-flash".into(),
+            },
         ];
 
         // User mapping takes priority
@@ -506,8 +604,14 @@ mod tests {
         assert!(MappingPreset::Custom.rules().is_empty());
 
         // from_name round-trip
-        assert_eq!(MappingPreset::from_name("balanced"), MappingPreset::Balanced);
-        assert_eq!(MappingPreset::from_name("performance"), MappingPreset::Performance);
+        assert_eq!(
+            MappingPreset::from_name("balanced"),
+            MappingPreset::Balanced
+        );
+        assert_eq!(
+            MappingPreset::from_name("performance"),
+            MappingPreset::Performance
+        );
         assert_eq!(MappingPreset::from_name("cost"), MappingPreset::Cost);
         assert_eq!(MappingPreset::from_name("custom"), MappingPreset::Custom);
         assert_eq!(MappingPreset::from_name("none"), MappingPreset::None);

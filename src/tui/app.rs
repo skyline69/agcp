@@ -1067,10 +1067,7 @@ impl App {
     fn mapping_cycle_target(&mut self, forward: bool) {
         let targets = crate::models::all_target_models();
         if let Some(rule) = self.mapping_rules.get_mut(self.mapping_selected) {
-            let current_idx = targets
-                .iter()
-                .position(|t| *t == rule.to)
-                .unwrap_or(0);
+            let current_idx = targets.iter().position(|t| *t == rule.to).unwrap_or(0);
             let new_idx = if forward {
                 (current_idx + 1) % targets.len()
             } else {
@@ -1493,10 +1490,7 @@ impl App {
                     self.mapping_selected = 0;
                 }
                 self.mapping_dirty = true;
-                self.mapping_status = Some(format!(
-                    "Preset: {}",
-                    self.mapping_preset.label()
-                ));
+                self.mapping_status = Some(format!("Preset: {}", self.mapping_preset.label()));
             }
             // Edit selected rule's "from" pattern
             KeyCode::Enter if self.current_tab == Tab::Mappings => {
@@ -1522,7 +1516,8 @@ impl App {
             KeyCode::Char('d') if self.current_tab == Tab::Mappings => {
                 if !self.mapping_rules.is_empty() {
                     self.mapping_rules.remove(self.mapping_selected);
-                    if self.mapping_selected >= self.mapping_rules.len() && self.mapping_selected > 0
+                    if self.mapping_selected >= self.mapping_rules.len()
+                        && self.mapping_selected > 0
                     {
                         self.mapping_selected -= 1;
                     }
@@ -2110,9 +2105,7 @@ impl App {
 
         // Check mapping rule hover
         self.hovered_mapping = None;
-        if self.current_tab == Tab::Mappings
-            && self.is_in_rect(column, row, self.mapping_area)
-        {
+        if self.current_tab == Tab::Mappings && self.is_in_rect(column, row, self.mapping_area) {
             let relative_row = row.saturating_sub(self.mapping_area.y) as usize;
             if relative_row < self.mapping_rules.len() {
                 self.hovered_mapping = Some(relative_row);
