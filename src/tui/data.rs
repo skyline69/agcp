@@ -395,7 +395,7 @@ impl DataProvider {
             Err(_) => return ServerStatus::Stopped, // No PID file = not running
         };
 
-        let pid: i32 = match pid_str.trim().parse() {
+        let _pid: i32 = match pid_str.trim().parse() {
             Ok(p) => p,
             Err(_) => return ServerStatus::Stopped, // Invalid PID file
         };
@@ -403,7 +403,7 @@ impl DataProvider {
         // Check if the process is actually alive (signal 0 = existence check)
         #[cfg(unix)]
         {
-            if unsafe { libc::kill(pid, 0) } == 0 {
+            if unsafe { libc::kill(_pid, 0) } == 0 {
                 ServerStatus::Running
             } else {
                 ServerStatus::Stopped
