@@ -224,6 +224,15 @@ async fn handle_request(
                     request_id = %request_id,
                     "Token counting not implemented"
                 );
+            } else if is_internal_endpoint(&path) {
+                debug!(
+                    method = %method,
+                    path = %path,
+                    status = status,
+                    duration_ms = duration.as_millis(),
+                    request_id = %request_id,
+                    "Request completed"
+                );
             } else {
                 info!(
                     method = %method,
@@ -250,6 +259,20 @@ async fn handle_request(
             Ok(resp)
         }
     }
+}
+
+/// Returns true for internal/monitoring endpoints that should be logged at DEBUG
+/// level instead of INFO to avoid filling the log with TUI polling noise.
+fn is_internal_endpoint(path: &str) -> bool {
+    matches!(
+        path,
+        "/" | "/health"
+            | "/stats"
+            | "/v1/stats"
+            | "/cache/stats"
+            | "/account-limits"
+            | "/api/event_logging/batch"
+    )
 }
 
 fn generate_request_id() -> String {

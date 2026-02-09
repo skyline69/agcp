@@ -37,12 +37,11 @@ pub fn read_last_lines_and_start(
         return (entries, None);
     }
 
-    // Read backwards from end in chunks to find enough lines
-    // We need `count` lines for display + extra to find "Server listening"
+    // Phase 1: Read backwards to collect `count` display lines
     let mut collected_lines: Vec<String> = Vec::new();
     let mut remaining = file_len;
 
-    loop {
+    while remaining > 0 && collected_lines.len() <= count {
         let chunk_size = remaining.min(READ_CHUNK_SIZE);
         let offset = remaining - chunk_size;
         let _ = file.seek(SeekFrom::Start(offset));
@@ -52,42 +51,55 @@ pub fn read_last_lines_and_start(
             break;
         }
 
-        // Convert to string and split into lines
         let chunk_str = String::from_utf8_lossy(&buf);
         let mut chunk_lines: Vec<String> = chunk_str.lines().map(String::from).collect();
 
         // If we're not at the start of the file, the first line may be partial
         if offset > 0 && !chunk_lines.is_empty() {
-            // Prepend partial first line to the previously collected last line
             let partial = chunk_lines.remove(0);
             if let Some(last) = collected_lines.last_mut() {
                 *last = format!("{}{}", partial, last);
             }
-            // If no collected lines yet, discard the partial line
         }
 
-        // Prepend chunk lines (they're earlier in the file)
+        // Check for "Server listening" in this chunk
+        for line in chunk_lines.iter().rev() {
+            if line.contains("Server listening") {
+                server_start_line = Some(line.clone());
+                break;
+            }
+        }
+
         chunk_lines.append(&mut collected_lines);
         collected_lines = chunk_lines;
+        remaining = offset;
+    }
+
+    // Phase 2: If we still haven't found "Server listening", keep scanning
+    // backwards without storing lines (just search for the marker)
+    while remaining > 0 && server_start_line.is_none() {
+        let chunk_size = remaining.min(READ_CHUNK_SIZE);
+        let offset = remaining - chunk_size;
+        let _ = file.seek(SeekFrom::Start(offset));
+
+        let mut buf = vec![0u8; chunk_size as usize];
+        if file.read_exact(&mut buf).is_err() {
+            break;
+        }
+
+        let chunk_str = String::from_utf8_lossy(&buf);
+        // Search backwards for "Server listening" without allocating line Vec
+        for line in chunk_str.lines().rev() {
+            if line.contains("Server listening") {
+                server_start_line = Some(line.to_string());
+                break;
+            }
+        }
 
         remaining = offset;
-
-        // Stop if we have enough lines or reached start of file
-        // Need extra lines beyond `count` to search for "Server listening"
-        if collected_lines.len() > count + 200 || remaining == 0 {
-            break;
-        }
     }
 
-    // Search backwards for "Server listening"
-    for line in collected_lines.iter().rev() {
-        if line.contains("Server listening") {
-            server_start_line = Some(line.clone());
-            break;
-        }
-    }
-
-    // Take the last `count` lines
+    // Take the last `count` lines for display
     let start = collected_lines.len().saturating_sub(count);
     for line in &collected_lines[start..] {
         entries.push_back(LogEntry::new(line.clone()));
