@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use dialoguer::{MultiSelect, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, MultiSelect};
 
 use crate::colors::*;
 use crate::config::Config;
@@ -12,6 +12,19 @@ use crate::config::Config;
 /// Regex for matching model_provider setting in codex config
 static MODEL_PROVIDER_REGEX: LazyLock<regex_lite::Regex> =
     LazyLock::new(|| regex_lite::Regex::new(r#"model_provider = "[^"]*""#).unwrap());
+
+/// Get the XDG config directory (~/.config), respecting $XDG_CONFIG_HOME.
+/// Unlike `dirs::config_dir()` which returns ~/Library/Application Support on macOS,
+/// many CLI tools (OpenCode, Crush) follow XDG conventions on all platforms.
+fn xdg_config_dir() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(xdg)
+    } else {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".config")
+    }
+}
 
 /// Tool configuration definition
 struct Tool {
@@ -268,10 +281,9 @@ base_url = "{}"
 // ============================================================================
 
 fn opencode_config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("opencode")
-        .join("opencode.json")
+    // OpenCode uses XDG_CONFIG_HOME (~/.config on all platforms), not the
+    // platform-native config dir (~/Library/Application Support on macOS).
+    xdg_config_dir().join("opencode").join("opencode.json")
 }
 
 fn detect_opencode(config_path: &Path) -> bool {
@@ -347,10 +359,9 @@ fn configure_opencode(config_path: &Path, proxy_url: &str) -> Result<(), String>
 // ============================================================================
 
 fn crush_config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("crush")
-        .join("crush.json")
+    // Crush uses XDG_CONFIG_HOME (~/.config on all platforms), not the
+    // platform-native config dir (~/Library/Application Support on macOS).
+    xdg_config_dir().join("crush").join("crush.json")
 }
 
 fn detect_crush(config_path: &Path) -> bool {
