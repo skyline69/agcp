@@ -573,90 +573,195 @@ pub struct TokenStats {
     pub total_cache_read_tokens: u64,
 }
 
-/// Number of data points to keep in the token history (one per poll interval)
-const TOKEN_HISTORY_SIZE: usize = 120; // 120 * 5s = 10 minutes
+/// Maximum number of data points to keep in the token history
+const TOKEN_HISTORY_MAX_POINTS: usize = 2000;
 
-/// Rolling time-series of per-model total token counts.
-/// Each entry is a snapshot of cumulative totals at a point in time.
-/// The chart renders deltas between consecutive snapshots.
-#[derive(Debug, Clone)]
+/// A single timestamped snapshot of cumulative token usage
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TokenSnapshot {
+    /// Unix timestamp (seconds since epoch)
+    pub timestamp: u64,
+    /// Per-model cumulative totals: (model_name, total_tokens)
+    pub models: Vec<(String, u64)>,
+}
+
+/// Persistent time-series of cumulative token usage per model.
+/// Snapshots are taken every poll interval and persisted to disk
+/// so they survive TUI/server restarts.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TokenHistory {
-    /// Model names in consistent order (insertion order)
-    pub models: Vec<String>,
-    /// Per-model time-series: each Vec has TOKEN_HISTORY_SIZE entries
-    /// representing total tokens (input + output) at each snapshot
-    pub series: Vec<std::collections::VecDeque<u64>>,
-    /// Number of snapshots recorded so far
-    pub count: usize,
+    /// Ordered list of snapshots
+    pub snapshots: Vec<TokenSnapshot>,
+    /// Unix timestamp of the quota period start (set from quota reset_time - 24h)
+    #[serde(default)]
+    pub period_start: Option<u64>,
+}
+
+impl Default for TokenHistory {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TokenHistory {
     pub fn new() -> Self {
         Self {
-            models: Vec::new(),
-            series: Vec::new(),
-            count: 0,
+            snapshots: Vec::new(),
+            period_start: None,
         }
+    }
+
+    /// Load from the persistence file, or return a new empty history
+    pub fn load() -> Self {
+        let path = Self::path();
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
+            Err(_) => Self::new(),
+        }
+    }
+
+    /// Save to the persistence file
+    pub fn save(&self) {
+        let path = Self::path();
+        if let Ok(json) = serde_json::to_string(self) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    /// Path to the persistence file
+    fn path() -> std::path::PathBuf {
+        crate::config::Config::dir().join("token_history.json")
     }
 
     /// Record a new snapshot from the current TokenStats.
-    /// Stores cumulative totals; the chart can compute rates from deltas.
-    pub fn push(&mut self, stats: &TokenStats) {
-        // Ensure all models from stats exist in our tracking
-        for m in &stats.models {
-            if !self.models.contains(&m.model) {
-                self.models.push(m.model.clone());
-                let mut deque = std::collections::VecDeque::with_capacity(TOKEN_HISTORY_SIZE);
-                // Backfill with zeros for previous snapshots
-                for _ in 0..self.count {
-                    deque.push_back(0);
-                }
-                self.series.push(deque);
-            }
+    /// Returns true if the snapshot was added (i.e., there's new data).
+    pub fn push(&mut self, stats: &TokenStats) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let models: Vec<(String, u64)> = stats
+            .models
+            .iter()
+            .map(|m| (m.model.clone(), m.input_tokens + m.output_tokens))
+            .collect();
+
+        // Skip if no token data
+        if models.is_empty() || models.iter().all(|(_, t)| *t == 0) {
+            return false;
         }
 
-        // Push current values for each tracked model
-        for (i, model_name) in self.models.iter().enumerate() {
-            let total = stats
-                .models
-                .iter()
-                .find(|m| &m.model == model_name)
-                .map(|m| m.input_tokens + m.output_tokens)
-                .unwrap_or(0);
+        self.snapshots.push(TokenSnapshot {
+            timestamp: now,
+            models,
+        });
 
-            let deque = &mut self.series[i];
-            if deque.len() >= TOKEN_HISTORY_SIZE {
-                deque.pop_front();
-            }
-            deque.push_back(total);
+        // Trim old snapshots
+        if self.snapshots.len() > TOKEN_HISTORY_MAX_POINTS {
+            let excess = self.snapshots.len() - TOKEN_HISTORY_MAX_POINTS;
+            self.snapshots.drain(..excess);
         }
 
-        self.count += 1;
+        true
     }
 
-    /// Get per-model rate data (tokens per interval) for the chart.
-    /// Returns Vec of (model_name, Vec<(x, y)>) where x is the data point index
-    /// and y is the tokens consumed in that interval.
-    pub fn get_rate_series(&self) -> Vec<(&str, Vec<(f64, f64)>)> {
+    /// Update the quota period start time from quota data.
+    /// Assumes a 24-hour quota period ending at reset_time.
+    pub fn set_period_from_reset_time(&mut self, reset_time_str: &str) {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(reset_time_str) {
+            let reset_ts = dt.timestamp() as u64;
+            // Quota periods are typically 24 hours
+            let period_start = reset_ts.saturating_sub(86400);
+            self.period_start = Some(period_start);
+        }
+    }
+
+    /// Reset the history (clear all snapshots). Called when quota period resets.
+    pub fn reset(&mut self) {
+        self.snapshots.clear();
+        self.save();
+    }
+
+    /// Check if the quota period has ended (current time > reset_time).
+    /// If reset_time is in the past, we should reset.
+    pub fn should_reset(&self, reset_time_str: &str) -> bool {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(reset_time_str) {
+            let reset_ts = dt.timestamp() as u64;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            // Only reset if we have snapshots that are from before the reset time
+            // and the reset has already happened
+            if now >= reset_ts
+                && let Some(first) = self.snapshots.first()
+            {
+                return first.timestamp < reset_ts;
+            }
+        }
+        false
+    }
+
+    /// Get per-model cumulative data for the chart.
+    /// Returns Vec of (model_name, Vec<(x, y)>) where:
+    /// - x = minutes since period_start (or first snapshot)
+    /// - y = cumulative total tokens
+    pub fn get_cumulative_series(&self) -> Vec<(String, Vec<(f64, f64)>)> {
+        if self.snapshots.is_empty() {
+            return Vec::new();
+        }
+
+        let time_origin = self
+            .period_start
+            .unwrap_or_else(|| self.snapshots[0].timestamp);
+
+        // Collect all unique model names
+        let mut model_names: Vec<String> = Vec::new();
+        for snap in &self.snapshots {
+            for (name, _) in &snap.models {
+                if !model_names.contains(name) {
+                    model_names.push(name.clone());
+                }
+            }
+        }
+
         let mut result = Vec::new();
-        for (i, model_name) in self.models.iter().enumerate() {
-            let deque = &self.series[i];
-            if deque.len() < 2 {
-                continue;
+        for model_name in &model_names {
+            let mut points = Vec::new();
+            for snap in &self.snapshots {
+                let x = (snap.timestamp.saturating_sub(time_origin)) as f64 / 60.0; // minutes
+                let y = snap
+                    .models
+                    .iter()
+                    .find(|(n, _)| n == model_name)
+                    .map(|(_, t)| *t as f64)
+                    .unwrap_or(0.0);
+                points.push((x, y));
             }
-
-            let mut points = Vec::with_capacity(deque.len() - 1);
-            for j in 1..deque.len() {
-                let delta = deque[j].saturating_sub(deque[j - 1]);
-                points.push((j as f64, delta as f64));
-            }
-
-            // Only include models that have non-zero activity
+            // Only include models with non-zero data
             if points.iter().any(|(_, y)| *y > 0.0) {
-                result.push((model_name.as_str(), points));
+                result.push((model_name.clone(), points));
             }
         }
         result
     }
-}
 
+    /// Get the time range in minutes for the X axis
+    pub fn get_time_range_minutes(&self) -> f64 {
+        if self.snapshots.is_empty() {
+            return 60.0; // Default 1 hour
+        }
+
+        let time_origin = self
+            .period_start
+            .unwrap_or_else(|| self.snapshots[0].timestamp);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        (now.saturating_sub(time_origin)) as f64 / 60.0
+    }
+}

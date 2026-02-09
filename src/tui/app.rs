@@ -414,7 +414,7 @@ impl App {
             cached_requests_per_min: 0.0,
             cached_uptime: String::from("00:00:00"),
             cached_token_stats: None,
-            token_history: super::data::TokenHistory::new(),
+            token_history: super::data::TokenHistory::load(),
             last_token_stats_refresh: Instant::now() - Duration::from_secs(10),
             cached_tabs_area: Rect::default(),
             log_level_filter: [true; 4],
@@ -515,9 +515,39 @@ impl App {
         }
         self.last_token_stats_refresh = Instant::now();
         self.cached_token_stats = super::data::DataProvider::fetch_token_stats();
-        if let Some(ref stats) = self.cached_token_stats {
-            self.token_history.push(stats);
+
+        // Update quota period from quota data
+        if self.token_history.period_start.is_none()
+            && let Some(reset_time) = self.get_earliest_reset_time()
+        {
+            self.token_history.set_period_from_reset_time(&reset_time);
         }
+
+        // Check for quota period reset
+        if let Some(reset_time) = self.get_earliest_reset_time()
+            && self.token_history.should_reset(&reset_time)
+        {
+            self.token_history.reset();
+            // Update period_start for new period
+            self.token_history.set_period_from_reset_time(&reset_time);
+        }
+
+        // Push new snapshot and save if data changed
+        if let Some(ref stats) = self.cached_token_stats
+            && self.token_history.push(stats)
+        {
+            self.token_history.save();
+        }
+    }
+
+    /// Get the earliest quota reset time from quota data
+    fn get_earliest_reset_time(&self) -> Option<String> {
+        self.quota_data
+            .values()
+            .flat_map(|quotas| quotas.iter())
+            .filter_map(|q| q.reset_time.as_ref())
+            .min()
+            .cloned()
     }
 
     /// Rebuild the filtered log indices based on current filter/search state
@@ -1381,6 +1411,10 @@ impl App {
                     // Force immediate status refresh
                     self.last_status_refresh = Instant::now() - std::time::Duration::from_secs(10);
                 }
+            }
+            // Usage tab controls
+            KeyCode::Char('r') if self.current_tab == Tab::Usage => {
+                self.token_history.reset();
             }
             // Account navigation (when on Accounts tab)
             KeyCode::Up | KeyCode::Char('k') if self.current_tab == Tab::Accounts => {

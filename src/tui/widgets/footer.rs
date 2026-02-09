@@ -63,6 +63,9 @@ impl Footer {
                 binds.insert(2, ("x", "Stop"));
                 binds.insert(2, ("s", "Start"));
             }
+            Tab::Usage => {
+                binds.insert(2, ("r", "Reset"));
+            }
             _ => {}
         }
 

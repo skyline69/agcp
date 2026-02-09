@@ -38,12 +38,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Layout: top summary row + time-series chart
     let layout = Layout::vertical([
         Constraint::Length(5), // Summary panel
-        Constraint::Fill(1),   // Token rate chart
+        Constraint::Fill(1),   // Cumulative token chart
     ])
     .split(area);
 
     render_summary(frame, layout[0], stats);
-    render_token_chart(frame, layout[1], app);
+    render_cumulative_chart(frame, layout[1], app);
 }
 
 /// Render when no token data is available
@@ -134,7 +134,7 @@ fn render_summary(frame: &mut Frame, area: Rect, stats: &crate::tui::data::Token
         Style::default().fg(theme::WARNING),
     ));
 
-    // Second line: per-model totals
+    // Second line: per-model totals with matching colors
     let mut model_spans = vec![Span::raw("  ")];
     for (i, m) in stats.models.iter().enumerate() {
         let color = MODEL_COLORS[i % MODEL_COLORS.len()];
@@ -157,14 +157,14 @@ fn render_summary(frame: &mut Frame, area: Rect, stats: &crate::tui::data::Token
     frame.render_widget(Paragraph::new(lines), text_area);
 }
 
-/// Render the time-series token rate chart with one line per model
-fn render_token_chart(frame: &mut Frame, area: Rect, app: &App) {
-    let rate_series = app.token_history.get_rate_series();
+/// Render the cumulative token usage chart with one line per model
+fn render_cumulative_chart(frame: &mut Frame, area: Rect, app: &App) {
+    let series = app.token_history.get_cumulative_series();
 
-    if rate_series.is_empty() {
-        // Not enough data points yet — show waiting message
+    if series.is_empty() {
+        // Not enough data points yet
         let block = Block::default()
-            .title(" Token Rate (tokens/5s by model) ")
+            .title(" Cumulative Token Usage ")
             .title_style(theme::primary())
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -175,32 +175,24 @@ fn render_token_chart(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(block, area);
 
         let msg =
-            Paragraph::new("Collecting data... chart will appear after a few poll intervals.")
+            Paragraph::new("Collecting data... chart will appear after the first poll interval.")
                 .style(theme::dim());
         frame.render_widget(msg, inner);
         return;
     }
 
-    // We need to own the data so Dataset can borrow it
-    let owned_series: Vec<(String, Vec<(f64, f64)>)> = rate_series
-        .iter()
-        .map(|(name, points)| (name.to_string(), points.clone()))
-        .collect();
-
-    // Find the global max Y value across all series
-    let max_y = owned_series
+    // Find max Y across all series
+    let max_y = series
         .iter()
         .flat_map(|(_, pts)| pts.iter().map(|(_, y)| *y))
         .fold(0.0f64, f64::max);
 
-    // Find the max X value
-    let max_x = owned_series
-        .iter()
-        .flat_map(|(_, pts)| pts.iter().map(|(x, _)| *x))
-        .fold(0.0f64, f64::max);
+    // Time range in minutes
+    let time_range = app.token_history.get_time_range_minutes();
+    let x_bound = time_range.max(1.0);
 
-    // Build datasets — one per model, each with a distinct color
-    let datasets: Vec<Dataset> = owned_series
+    // Build datasets
+    let datasets: Vec<Dataset> = series
         .iter()
         .enumerate()
         .map(|(i, (name, points))| {
@@ -214,46 +206,23 @@ fn render_token_chart(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    // X axis: data point indices (each represents ~5 seconds)
-    let x_bound = max_x.max(10.0);
-    let x_labels = {
-        let total_secs = x_bound * 5.0; // Each point is ~5 seconds
-        vec![
-            Span::styled(format!("-{:.0}s", total_secs), theme::dim()),
-            Span::styled(format!("-{:.0}s", total_secs / 2.0), theme::dim()),
-            Span::styled("now", theme::dim()),
-        ]
-    };
-
+    // X axis: time in minutes
+    let x_labels = build_time_labels(x_bound);
     let x_axis = Axis::default()
         .style(theme::dim())
         .bounds([0.0, x_bound])
         .labels(x_labels);
 
-    // Y axis: tokens per interval
+    // Y axis: cumulative tokens
     let y_bound = if max_y <= 100.0 {
         (max_y * 1.2).max(10.0)
     } else {
         max_y * 1.1
     };
 
-    let y_labels = if max_y <= 10.0 {
-        vec![
-            Span::styled("0", theme::dim()),
-            Span::styled(format!("{}", y_bound.ceil() as u64), theme::dim()),
-        ]
-    } else {
-        let mid = (y_bound / 2.0).round() as u64;
-        let max_label = y_bound.ceil() as u64;
-        vec![
-            Span::styled("0", theme::dim()),
-            Span::styled(format_tokens_short(mid), theme::dim()),
-            Span::styled(format_tokens_short(max_label), theme::dim()),
-        ]
-    };
-
+    let y_labels = build_y_labels(y_bound);
     let y_axis = Axis::default()
-        .title(Span::styled("tokens/5s", theme::dim()))
+        .title(Span::styled("tokens", theme::dim()))
         .style(theme::dim())
         .bounds([0.0, y_bound])
         .labels(y_labels);
@@ -261,7 +230,7 @@ fn render_token_chart(frame: &mut Frame, area: Rect, app: &App) {
     let chart = Chart::new(datasets)
         .block(
             Block::default()
-                .title(" Token Rate (tokens/5s by model) ")
+                .title(" Cumulative Token Usage ")
                 .title_style(theme::primary())
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -276,6 +245,58 @@ fn render_token_chart(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(chart, area);
 }
 
+/// Build X-axis labels based on the time range
+fn build_time_labels(total_minutes: f64) -> Vec<Span<'static>> {
+    if total_minutes <= 5.0 {
+        vec![
+            Span::styled("0m", theme::dim()),
+            Span::styled(format!("{:.0}m", total_minutes), theme::dim()),
+        ]
+    } else if total_minutes <= 60.0 {
+        let mid = (total_minutes / 2.0).round();
+        vec![
+            Span::styled("0m", theme::dim()),
+            Span::styled(format!("{:.0}m", mid), theme::dim()),
+            Span::styled(format!("{:.0}m", total_minutes.round()), theme::dim()),
+        ]
+    } else if total_minutes <= 1440.0 {
+        // Up to 24 hours — show in hours
+        let hours = total_minutes / 60.0;
+        let mid = (hours / 2.0).round();
+        vec![
+            Span::styled("0h", theme::dim()),
+            Span::styled(format!("{:.0}h", mid), theme::dim()),
+            Span::styled(format!("{:.0}h", hours.round()), theme::dim()),
+        ]
+    } else {
+        // Multiple days
+        let days = total_minutes / 1440.0;
+        vec![
+            Span::styled("0d", theme::dim()),
+            Span::styled(format!("{:.1}d", days / 2.0), theme::dim()),
+            Span::styled(format!("{:.1}d", days), theme::dim()),
+        ]
+    }
+}
+
+/// Build Y-axis labels with appropriate formatting
+fn build_y_labels(y_bound: f64) -> Vec<Span<'static>> {
+    if y_bound <= 10.0 {
+        vec![
+            Span::styled("0", theme::dim()),
+            Span::styled(format!("{}", y_bound.ceil() as u64), theme::dim()),
+        ]
+    } else {
+        let mid = (y_bound / 2.0).round() as u64;
+        let max_label = y_bound.ceil() as u64;
+        vec![
+            Span::styled("0", theme::dim()),
+            Span::styled(format_tokens_short(mid), theme::dim()),
+            Span::styled(format_tokens_short(max_label), theme::dim()),
+        ]
+    }
+}
+
 /// Format token count for display with appropriate suffix
 fn format_tokens(count: u64) -> String {
     if count >= 1_000_000 {
@@ -283,7 +304,6 @@ fn format_tokens(count: u64) -> String {
     } else if count >= 10_000 {
         format!("{:.1}K", count as f64 / 1_000.0)
     } else if count >= 1_000 {
-        // Use comma separator for thousands
         format!("{},{:03}", count / 1000, count % 1000)
     } else {
         format!("{}", count)
@@ -303,10 +323,8 @@ fn format_tokens_short(count: u64) -> String {
 
 /// Shorten model names for display in chart legend
 fn shorten_model_name(name: &str) -> String {
-    // Strip common prefixes/suffixes to make names more readable
     let name = name.replace("claude-", "").replace("gemini-", "gem-");
 
-    // Truncate date suffixes like -20250514
     if let Some(idx) = name.rfind("-202") {
         name[..idx].to_string()
     } else {
