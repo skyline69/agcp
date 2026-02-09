@@ -705,16 +705,14 @@ impl TokenHistory {
 
     /// Get per-model cumulative data for the chart.
     /// Returns Vec of (model_name, Vec<(x, y)>) where:
-    /// - x = minutes since period_start (or first snapshot)
+    /// - x = minutes since the first snapshot
     /// - y = cumulative total tokens
     pub fn get_cumulative_series(&self) -> Vec<(String, Vec<(f64, f64)>)> {
         if self.snapshots.is_empty() {
             return Vec::new();
         }
 
-        let time_origin = self
-            .period_start
-            .unwrap_or_else(|| self.snapshots[0].timestamp);
+        let time_origin = self.snapshots[0].timestamp;
 
         // Collect all unique model names
         let mut model_names: Vec<String> = Vec::new();
@@ -753,15 +751,14 @@ impl TokenHistory {
             return 60.0; // Default 1 hour
         }
 
-        let time_origin = self
-            .period_start
-            .unwrap_or_else(|| self.snapshots[0].timestamp);
+        let time_origin = self.snapshots[0].timestamp;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        (now.saturating_sub(time_origin)) as f64 / 60.0
+        let range = (now.saturating_sub(time_origin)) as f64 / 60.0;
+        range.max(1.0) // At least 1 minute to avoid zero-width axis
     }
 }
