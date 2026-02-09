@@ -247,16 +247,15 @@ impl Stats {
         requests
             .iter()
             .map(|(model, count)| {
-                let (input, output, cache_read) =
-                    if let Some(tc) = token_counters.get(model) {
-                        (
-                            tc.input_tokens.load(Ordering::Relaxed),
-                            tc.output_tokens.load(Ordering::Relaxed),
-                            tc.cache_read_tokens.load(Ordering::Relaxed),
-                        )
-                    } else {
-                        (0, 0, 0)
-                    };
+                let (input, output, cache_read) = if let Some(tc) = token_counters.get(model) {
+                    (
+                        tc.input_tokens.load(Ordering::Relaxed),
+                        tc.output_tokens.load(Ordering::Relaxed),
+                        tc.cache_read_tokens.load(Ordering::Relaxed),
+                    )
+                } else {
+                    (0, 0, 0)
+                };
                 ModelStats {
                     model: model.clone(),
                     requests: count.load(Ordering::Relaxed),

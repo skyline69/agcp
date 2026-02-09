@@ -486,13 +486,14 @@ impl DataProvider {
         let config = crate::config::get_config();
         let addr = format!("{}:{}", config.server.host, config.server.port);
 
-        let mut stream = TcpStream::connect_timeout(
-            &addr.parse().ok()?,
-            Duration::from_millis(500),
-        )
-        .ok()?;
-        stream.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
-        stream.set_write_timeout(Some(Duration::from_millis(500))).ok()?;
+        let mut stream =
+            TcpStream::connect_timeout(&addr.parse().ok()?, Duration::from_millis(500)).ok()?;
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok()?;
+        stream
+            .set_write_timeout(Some(Duration::from_millis(500)))
+            .ok()?;
 
         let request = format!(
             "GET /stats HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
