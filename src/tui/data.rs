@@ -575,8 +575,8 @@ pub struct TokenStats {
 }
 
 /// Maximum number of data points to keep in the token history
-/// At 1 point/sec, 10000 points covers ~2.8 hours
-const TOKEN_HISTORY_MAX_POINTS: usize = 10000;
+/// With change-only recording, this covers many hours of active use
+const TOKEN_HISTORY_MAX_POINTS: usize = 5000;
 
 /// A single timestamped snapshot of cumulative token usage
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -694,6 +694,21 @@ impl TokenHistory {
                 (name, value.max(prev))
             })
             .collect();
+
+        // Skip if values haven't changed since the last snapshot (idle period)
+        if let Some(last) = self.snapshots.last() {
+            let unchanged = models.len() == last.models.len()
+                && models.iter().all(|(name, val)| {
+                    last.models
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, t)| t == val)
+                        .unwrap_or(false)
+                });
+            if unchanged {
+                return false;
+            }
+        }
 
         self.snapshots.push(TokenSnapshot {
             timestamp: now,
