@@ -2464,8 +2464,10 @@ pub fn run() -> io::Result<()> {
         // Refresh quota data periodically (every 60 seconds)
         app.maybe_refresh_quota();
 
-        // Refresh token usage stats periodically (every 5 seconds)
-        app.maybe_refresh_token_stats();
+        // Refresh token usage stats periodically (every 5 seconds, only on relevant tabs)
+        if matches!(app.current_tab, Tab::Usage | Tab::Overview) {
+            app.maybe_refresh_token_stats();
+        }
 
         // Poll for background tier refresh completion
         app.poll_tier_refresh();

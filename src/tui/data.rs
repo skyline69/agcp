@@ -657,9 +657,9 @@ impl TokenHistory {
             return false;
         }
 
-        // Detect server restart: if any model's raw total is less than the
-        // last snapshot's value (minus offset), the server counters reset.
-        // Accumulate the previous peak as an offset so the line never drops.
+        // Detect server restart: if any model's raw value + current offset
+        // is less than the last snapshot, the server counters reset.
+        // Update offset so values only go up.
         if let Some(last_snap) = self.snapshots.last() {
             for (name, raw_total) in &raw_models {
                 let last_total = last_snap
@@ -669,21 +669,28 @@ impl TokenHistory {
                     .map(|(_, t)| *t)
                     .unwrap_or(0);
                 let current_offset = self.offsets.get(name).copied().unwrap_or(0);
-                let raw_with_offset = raw_total + current_offset;
 
-                if raw_with_offset < last_total {
-                    // Server restarted — the old peak becomes the new offset
+                if raw_total + current_offset < last_total {
+                    // Server restarted — set offset so new usage builds on previous peak
                     self.offsets.insert(name.clone(), last_total);
                 }
             }
         }
 
-        // Apply offsets to get the true cumulative values
+        // Apply offsets and enforce monotonicity (line never goes down)
+        let last_snap = self.snapshots.last();
         let models: Vec<(String, u64)> = raw_models
             .into_iter()
             .map(|(name, raw)| {
                 let offset = self.offsets.get(&name).copied().unwrap_or(0);
-                (name, raw + offset)
+                let value = raw + offset;
+
+                // Extra safety: clamp to at least the previous snapshot's value
+                let prev = last_snap
+                    .and_then(|s| s.models.iter().find(|(n, _)| n == &name))
+                    .map(|(_, t)| *t)
+                    .unwrap_or(0);
+                (name, value.max(prev))
             })
             .collect();
 
