@@ -600,6 +600,10 @@ pub struct TokenHistory {
     /// Per-model offsets to add when the server restarts (so the line never drops)
     #[serde(default)]
     offsets: std::collections::HashMap<String, u64>,
+    /// Per-model peak stored values — survives model disappearing from stats after
+    /// server restart so we can still detect drops when the model reappears.
+    #[serde(default)]
+    peak_values: std::collections::HashMap<String, u64>,
 }
 
 impl Default for TokenHistory {
@@ -614,16 +618,41 @@ impl TokenHistory {
             snapshots: Vec::new(),
             period_start: None,
             offsets: std::collections::HashMap::new(),
+            peak_values: std::collections::HashMap::new(),
         }
     }
 
     /// Load from the persistence file, or return a new empty history
     pub fn load() -> Self {
         let path = Self::path();
-        match std::fs::read_to_string(&path) {
+        let mut history: Self = match std::fs::read_to_string(&path) {
             Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
-            Err(_) => Self::new(),
+            Err(_) => return Self::new(),
+        };
+
+        // Rebuild peak_values from snapshots if empty (backward compat with old files)
+        if history.peak_values.is_empty() {
+            for snap in &history.snapshots {
+                for (name, val) in &snap.models {
+                    let peak = history.peak_values.entry(name.clone()).or_insert(0);
+                    *peak = (*peak).max(*val);
+                }
+            }
         }
+
+        // Deduplicate consecutive snapshots with identical model values
+        history.snapshots.dedup_by(|b, a| {
+            a.models.len() == b.models.len()
+                && a.models.iter().all(|(name, val)| {
+                    b.models
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, t)| t == val)
+                        .unwrap_or(false)
+                })
+        });
+
+        history
     }
 
     /// Save to the persistence file
@@ -659,39 +688,29 @@ impl TokenHistory {
         }
 
         // Detect server restart: if any model's raw value + current offset
-        // is less than the last snapshot, the server counters reset.
-        // Update offset so values only go up.
-        if let Some(last_snap) = self.snapshots.last() {
-            for (name, raw_total) in &raw_models {
-                let last_total = last_snap
-                    .models
-                    .iter()
-                    .find(|(n, _)| n == name)
-                    .map(|(_, t)| *t)
-                    .unwrap_or(0);
-                let current_offset = self.offsets.get(name).copied().unwrap_or(0);
+        // is less than the peak stored value, the server counters reset.
+        // We use peak_values (not last_snap) so models that disappear after
+        // a restart and later reappear still get correct offset treatment.
+        for (name, raw_total) in &raw_models {
+            let peak = self.peak_values.get(name).copied().unwrap_or(0);
+            let current_offset = self.offsets.get(name).copied().unwrap_or(0);
 
-                if raw_total + current_offset < last_total {
-                    // Server restarted — set offset so new usage builds on previous peak
-                    self.offsets.insert(name.clone(), last_total);
-                }
+            if peak > 0 && raw_total + current_offset < peak {
+                // Server restarted — set offset so new usage builds on previous peak
+                self.offsets.insert(name.clone(), peak);
             }
         }
 
         // Apply offsets and enforce monotonicity (line never goes down)
-        let last_snap = self.snapshots.last();
         let models: Vec<(String, u64)> = raw_models
             .into_iter()
             .map(|(name, raw)| {
                 let offset = self.offsets.get(&name).copied().unwrap_or(0);
                 let value = raw + offset;
 
-                // Extra safety: clamp to at least the previous snapshot's value
-                let prev = last_snap
-                    .and_then(|s| s.models.iter().find(|(n, _)| n == &name))
-                    .map(|(_, t)| *t)
-                    .unwrap_or(0);
-                (name, value.max(prev))
+                // Extra safety: clamp to at least the peak stored value
+                let peak = self.peak_values.get(&name).copied().unwrap_or(0);
+                (name, value.max(peak))
             })
             .collect();
 
@@ -708,6 +727,12 @@ impl TokenHistory {
             if unchanged {
                 return false;
             }
+        }
+
+        // Update peak values
+        for (name, val) in &models {
+            let peak = self.peak_values.entry(name.clone()).or_insert(0);
+            *peak = (*peak).max(*val);
         }
 
         self.snapshots.push(TokenSnapshot {
@@ -739,6 +764,7 @@ impl TokenHistory {
     pub fn reset(&mut self) {
         self.snapshots.clear();
         self.offsets.clear();
+        self.peak_values.clear();
         self.save();
     }
 
