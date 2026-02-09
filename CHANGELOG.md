@@ -3,6 +3,51 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.2.0] - 2026-02-09
+
+
+### Bug Fixes
+
+- Update help screen with correct tab count and missing shortcuts ([0fb4379](https://github.com/skyline69/agcp/commit/0fb43797d99234cf2a68bab47353eca9d15d0087)) — Ö. Efe D.
+- Cache-bust style.css for GitHub Pages ([4c755b4](https://github.com/skyline69/agcp/commit/4c755b4e5cba8198542a10ec5418a220ecdf5831)) — Ö. Efe D.
+- Use first snapshot as chart time origin instead of quota period start ([caf95bb](https://github.com/skyline69/agcp/commit/caf95bb054a394fe3f68913f85cd38b558da4716)) — Ö. Efe D.
+- Prevent chart line from dropping on server restart ([e13469e](https://github.com/skyline69/agcp/commit/e13469e40acfa95631c1b8f0031bde509ed434e8)) — Ö. Efe D.
+- Only poll /stats on Usage/Overview tabs, enforce monotonic chart lines ([aeec02e](https://github.com/skyline69/agcp/commit/aeec02eda4acff79942347cbf6cbfc4c6541e2b6)) — Ö. Efe D.
+- Sort models by usage in chart legend and summary panel ([25696d5](https://github.com/skyline69/agcp/commit/25696d55248f1d2a47ffc3ffb6cc8d762788ef89)) — Ö. Efe D.
+- Correct chart restart detection for disappearing models ([93692f6](https://github.com/skyline69/agcp/commit/93692f63ec5a3cfd7f4e84f9b54bb3ac3652b4cb)) — Ö. Efe D.
+- Uptime stuck at 00:00:00 due to /stats polling flooding logs ([e12faf0](https://github.com/skyline69/agcp/commit/e12faf056aa074826fa986c1d982d2788fb0a8c3)) — Ö. Efe D.
+- OpenCode and Crush not detected on macOS in setup command ([35ff410](https://github.com/skyline69/agcp/commit/35ff410fb59198a9509c27742c39f6ed2fc21565)) — Ö. Efe D.
+- Crush 400 INVALID_ARGUMENT due to excessive maxOutputTokens ([721f909](https://github.com/skyline69/agcp/commit/721f909e9eaf65e3e9297f35968706bb55281839)) — Ö. Efe D.
+- Formatting ([9171bae](https://github.com/skyline69/agcp/commit/9171bae1e7193ce68ed8f622c78491676b8033e8)) — Ö. Efe D.
+
+
+### Documentation
+
+- Add 'Works with' logo strip, 'Why would I need this?' section, and ratatui footer mention ([d4900b7](https://github.com/skyline69/agcp/commit/d4900b7316c4ffab3af382d3e28272643da3c947)) — Ö. Efe D.
+- Add Usage tab, Crush support, and token tracking to website ([ab61e95](https://github.com/skyline69/agcp/commit/ab61e95d2c179f80469ea53721a42a40b7785b5f)) — Ö. Efe D.
+
+
+### Features
+
+- Add tool_choice support, token usage tracking, and TUI usage tab ([ec4eaf0](https://github.com/skyline69/agcp/commit/ec4eaf046a2226d90674593ba859631e98a88f4f)) — Ö. Efe D.
+- Replace bar chart with multi-dataset time-series line chart in Usage tab ([7ae65f2](https://github.com/skyline69/agcp/commit/7ae65f246bb55e4c2250c2f4072a5a22ca9ded7c)) — Ö. Efe D.
+- Cumulative token chart with persistence and auto-reset on quota period ([437f301](https://github.com/skyline69/agcp/commit/437f3018f015a7881a9394ca6f390fd54de467a7)) — Ö. Efe D.
+- Add missing tab sections to help overlay in two-column layout ([cb15b3f](https://github.com/skyline69/agcp/commit/cb15b3f8087ef6db36db47f874117f3048d71287)) — Ö. Efe D.
+
+
+### Miscellaneous
+
+- Format code ([7fb4f8c](https://github.com/skyline69/agcp/commit/7fb4f8c2c9b649f1fc2896de3e529465b374b12e)) — Ö. Efe D.
+- Update version & update dependencies ([48d12c3](https://github.com/skyline69/agcp/commit/48d12c395ce9a952df68ba3da766b9dab7ba3f33)) — Ö. Efe D.
+
+
+### Performance
+
+- Reduce memory allocations across hot paths ([64412ed](https://github.com/skyline69/agcp/commit/64412ed497a830dd969a2a6eb52f51af1389d6d6)) — Ö. Efe D.
+- Increase chart update rate to 1s for smoother lines ([715f75c](https://github.com/skyline69/agcp/commit/715f75cb1ea6a1db72845d3cfabc7222fb8840b0)) — Ö. Efe D.
+- Only record token snapshots when values change ([1816137](https://github.com/skyline69/agcp/commit/18161379225fee8c6d4fd405f27ff08bcfa8cc7c)) — Ö. Efe D.
+
+
 ## [v1.1.0] - 2026-02-08
 
 
