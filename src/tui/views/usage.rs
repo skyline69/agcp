@@ -134,9 +134,15 @@ fn render_summary(frame: &mut Frame, area: Rect, stats: &crate::tui::data::Token
         Style::default().fg(theme::WARNING),
     ));
 
-    // Second line: per-model totals with matching colors
+    // Second line: per-model totals with matching colors, sorted by usage
+    let mut sorted_models: Vec<_> = stats.models.iter().collect();
+    sorted_models.sort_by(|a, b| {
+        let a_total = a.input_tokens + a.output_tokens;
+        let b_total = b.input_tokens + b.output_tokens;
+        b_total.cmp(&a_total)
+    });
     let mut model_spans = vec![Span::raw("  ")];
-    for (i, m) in stats.models.iter().enumerate() {
+    for (i, m) in sorted_models.iter().enumerate() {
         let color = MODEL_COLORS[i % MODEL_COLORS.len()];
         if i > 0 {
             model_spans.push(Span::raw("  "));
@@ -159,7 +165,7 @@ fn render_summary(frame: &mut Frame, area: Rect, stats: &crate::tui::data::Token
 
 /// Render the cumulative token usage chart with one line per model
 fn render_cumulative_chart(frame: &mut Frame, area: Rect, app: &App) {
-    let series = app.token_history.get_cumulative_series();
+    let mut series = app.token_history.get_cumulative_series();
 
     if series.is_empty() {
         // Not enough data points yet
@@ -180,6 +186,15 @@ fn render_cumulative_chart(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(msg, inner);
         return;
     }
+
+    // Sort models by total usage (highest first) for legend ordering
+    series.sort_by(|a, b| {
+        let a_max = a.1.last().map(|(_, y)| *y).unwrap_or(0.0);
+        let b_max = b.1.last().map(|(_, y)| *y).unwrap_or(0.0);
+        b_max
+            .partial_cmp(&a_max)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Find max Y across all series
     let max_y = series
