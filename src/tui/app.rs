@@ -275,6 +275,8 @@ pub struct App {
     pub token_history: super::data::TokenHistory,
     /// Last time token stats were fetched
     last_token_stats_refresh: Instant,
+    /// Last time token history was saved to disk
+    last_token_history_save: Instant,
     /// Last tab area width used for tab_areas calculation (for invalidation)
     cached_tabs_area: Rect,
     // Log filtering and search state
@@ -416,6 +418,7 @@ impl App {
             cached_token_stats: None,
             token_history: super::data::TokenHistory::load(),
             last_token_stats_refresh: Instant::now() - Duration::from_secs(10),
+            last_token_history_save: Instant::now(),
             cached_tabs_area: Rect::default(),
             log_level_filter: [true; 4],
             log_account_filter: None,
@@ -508,9 +511,9 @@ impl App {
         self.cached_requests_per_min = super::data::calculate_requests_per_min(&self.logs, now);
     }
 
-    /// Refresh token stats from the server's /stats endpoint (every 5 seconds)
+    /// Refresh token stats from the server's /stats endpoint (every 1 second)
     pub fn maybe_refresh_token_stats(&mut self) {
-        if self.last_token_stats_refresh.elapsed() < Duration::from_secs(5) {
+        if self.last_token_stats_refresh.elapsed() < Duration::from_secs(1) {
             return;
         }
         self.last_token_stats_refresh = Instant::now();
@@ -532,10 +535,14 @@ impl App {
             self.token_history.set_period_from_reset_time(&reset_time);
         }
 
-        // Push new snapshot and save if data changed
-        if let Some(ref stats) = self.cached_token_stats
-            && self.token_history.push(stats)
-        {
+        // Push new snapshot
+        if let Some(ref stats) = self.cached_token_stats {
+            self.token_history.push(stats);
+        }
+
+        // Save to disk periodically (every 30 seconds) to avoid I/O overhead
+        if self.last_token_history_save.elapsed() >= Duration::from_secs(30) {
+            self.last_token_history_save = Instant::now();
             self.token_history.save();
         }
     }

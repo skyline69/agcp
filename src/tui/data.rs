@@ -575,7 +575,8 @@ pub struct TokenStats {
 }
 
 /// Maximum number of data points to keep in the token history
-const TOKEN_HISTORY_MAX_POINTS: usize = 2000;
+/// At 1 point/sec, 10000 points covers ~2.8 hours
+const TOKEN_HISTORY_MAX_POINTS: usize = 10000;
 
 /// A single timestamped snapshot of cumulative token usage
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
