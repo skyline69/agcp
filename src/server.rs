@@ -380,6 +380,16 @@ async fn track_request_outcome(
     record_request_outcome(state, account_id, model, success, rate_limit_until).await;
 }
 
+/// Record token usage from a completed response
+fn record_usage(model: &str, usage: &crate::format::anthropic::Usage) {
+    get_stats().record_token_usage(
+        model,
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_input_tokens.unwrap_or(0),
+    );
+}
+
 async fn handle_messages(
     req: Request<hyper::body::Incoming>,
     state: Arc<ServerState>,
@@ -742,6 +752,7 @@ async fn handle_openai_non_streaming(
 ) -> Result<Response<Full<Bytes>>, Error> {
     let response = client.send_request(body, access_token, model).await?;
     let anthropic_response = parse_response(&response, model, request_id);
+    record_usage(model, &anthropic_response.usage);
 
     let openai_response =
         crate::format::anthropic_to_openai(&anthropic_response, model, request_id);
@@ -769,6 +780,7 @@ async fn handle_openai_thinking_non_streaming(
     )?;
 
     let anthropic_response = crate::format::build_response_from_events(&events, model, request_id);
+    record_usage(model, &anthropic_response.usage);
     let openai_response =
         crate::format::anthropic_to_openai(&anthropic_response, model, request_id);
 
@@ -801,6 +813,7 @@ async fn handle_openai_streaming(
     check_stream_errors(&all_events, model, request_id, " (OpenAI streaming)")?;
 
     let mut input_tokens = 0u32;
+    let mut output_tokens = 0u32;
     let mut sent_role = false;
 
     for event in &all_events {
@@ -892,7 +905,7 @@ async fn handle_openai_streaming(
                 }
             }
             StreamEvent::MessageDelta { delta, usage } => {
-                let output_tokens = usage.output_tokens;
+                output_tokens = usage.output_tokens;
                 let finish_reason = delta.stop_reason.map(|r| r.to_openai_str().to_string());
 
                 let chunk = ChatCompletionChunk {
@@ -926,6 +939,7 @@ async fn handle_openai_streaming(
         }
     }
 
+    get_stats().record_token_usage(model, input_tokens, output_tokens, 0);
     output.push_str("data: [DONE]\n\n");
 
     Ok(sse_ok_response(output, request_id))
@@ -1087,6 +1101,7 @@ async fn handle_responses_non_streaming(
 ) -> Result<Response<Full<Bytes>>, Error> {
     let response = client.send_request(body, access_token, model).await?;
     let anthropic_response = parse_response(&response, model, request_id);
+    record_usage(model, &anthropic_response.usage);
 
     let responses_response =
         crate::format::anthropic_to_responses(&anthropic_response, model, request_id);
@@ -1116,6 +1131,7 @@ async fn handle_responses_thinking_non_streaming(
 
     let anthropic_response =
         crate::format::build_response_from_events(&all_events, model, request_id);
+    record_usage(model, &anthropic_response.usage);
 
     let responses_response =
         crate::format::anthropic_to_responses(&anthropic_response, model, request_id);
@@ -1484,6 +1500,9 @@ async fn handle_responses_streaming(
         });
     }
 
+    // Record token usage for stats
+    get_stats().record_token_usage(model, input_tokens, output_tokens, cache_read_tokens);
+
     // Response completed
     emit_event(
         &mut output,
@@ -1639,6 +1658,7 @@ async fn handle_non_streaming_messages(
 ) -> Result<Response<Full<Bytes>>, Error> {
     let response = client.send_request(body, access_token, model).await?;
     let anthropic_response = parse_response(&response, model, request_id);
+    record_usage(model, &anthropic_response.usage);
 
     log_if_enabled(request_id, "Anthropic response", &anthropic_response);
 
@@ -1725,6 +1745,7 @@ async fn handle_thinking_non_streaming_messages(
     }
 
     let anthropic_response = crate::format::build_response_from_events(&events, model, request_id);
+    record_usage(model, &anthropic_response.usage);
 
     log_if_enabled(request_id, "Anthropic response", &anthropic_response);
 
@@ -1763,9 +1784,24 @@ async fn handle_streaming_messages(
 
     check_stream_errors(&events, model, request_id, "")?;
 
+    // Extract token counts from stream events for usage tracking
+    let mut input_tokens = 0u32;
+    let mut output_tokens = 0u32;
+    let mut cache_read_tokens = 0u32;
     for event in &events {
+        match event {
+            StreamEvent::MessageStart { message } => {
+                input_tokens = message.usage.input_tokens;
+                cache_read_tokens = message.usage.cache_read_input_tokens.unwrap_or(0);
+            }
+            StreamEvent::MessageDelta { usage, .. } => {
+                output_tokens = usage.output_tokens;
+            }
+            _ => {}
+        }
         output.push_str(&format_sse_event(event));
     }
+    get_stats().record_token_usage(model, input_tokens, output_tokens, cache_read_tokens);
     output.push_str(&format_sse_event(&create_message_stop()));
 
     // Check if we got an empty response (no content events)

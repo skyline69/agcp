@@ -1,10 +1,13 @@
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Number of seconds to track for the request rate graph
 const RATE_HISTORY_SIZE: usize = 60;
+
+/// Maximum number of token events to keep for time-series display
+const MAX_TOKEN_EVENTS: usize = 1000;
 
 /// Global stats instance
 static STATS: std::sync::LazyLock<Stats> = std::sync::LazyLock::new(Stats::new);
@@ -12,6 +15,39 @@ static STATS: std::sync::LazyLock<Stats> = std::sync::LazyLock::new(Stats::new);
 /// Get the global stats instance
 pub fn get_stats() -> &'static Stats {
     &STATS
+}
+
+/// Per-model token counters (atomic for lock-free reads)
+struct TokenCounters {
+    input_tokens: AtomicU64,
+    output_tokens: AtomicU64,
+    cache_read_tokens: AtomicU64,
+}
+
+impl TokenCounters {
+    fn new() -> Self {
+        Self {
+            input_tokens: AtomicU64::new(0),
+            output_tokens: AtomicU64::new(0),
+            cache_read_tokens: AtomicU64::new(0),
+        }
+    }
+}
+
+/// A single token usage event with timestamp for time-series display
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct TokenEvent {
+    /// Seconds since server start
+    pub elapsed_secs: u64,
+    /// Model that generated this usage
+    pub model: String,
+    /// Input tokens consumed
+    pub input_tokens: u32,
+    /// Output tokens generated
+    pub output_tokens: u32,
+    /// Cache read tokens
+    pub cache_read_tokens: u32,
 }
 
 /// Request/response statistics
@@ -24,6 +60,10 @@ pub struct Stats {
     endpoint_requests: RwLock<HashMap<String, AtomicU64>>,
     /// Request rate history (requests per second for last N seconds)
     rate_history: RwLock<RateHistory>,
+    /// Per-model cumulative token counters
+    token_counters: RwLock<HashMap<String, TokenCounters>>,
+    /// Time-series of token events for graphing
+    token_events: RwLock<VecDeque<TokenEvent>>,
 }
 
 /// Tracks requests per second over time
@@ -104,6 +144,8 @@ impl Stats {
             start_time: Instant::now(),
             endpoint_requests: RwLock::new(HashMap::new()),
             rate_history: RwLock::new(RateHistory::new()),
+            token_counters: RwLock::new(HashMap::new()),
+            token_events: RwLock::new(VecDeque::with_capacity(MAX_TOKEN_EVENTS)),
         }
     }
 
@@ -117,6 +159,59 @@ impl Stats {
         self.rate_history.write().record(now_secs);
     }
 
+    /// Record token usage for a completed request
+    pub fn record_token_usage(
+        &self,
+        model: &str,
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_read_tokens: u32,
+    ) {
+        // Update per-model cumulative counters
+        {
+            let counters = self.token_counters.read();
+            if let Some(c) = counters.get(model) {
+                c.input_tokens
+                    .fetch_add(input_tokens as u64, Ordering::Relaxed);
+                c.output_tokens
+                    .fetch_add(output_tokens as u64, Ordering::Relaxed);
+                c.cache_read_tokens
+                    .fetch_add(cache_read_tokens as u64, Ordering::Relaxed);
+                // Fall through to record event
+            } else {
+                drop(counters);
+                let mut counters = self.token_counters.write();
+                let entry = counters
+                    .entry(model.to_string())
+                    .or_insert_with(TokenCounters::new);
+                entry
+                    .input_tokens
+                    .fetch_add(input_tokens as u64, Ordering::Relaxed);
+                entry
+                    .output_tokens
+                    .fetch_add(output_tokens as u64, Ordering::Relaxed);
+                entry
+                    .cache_read_tokens
+                    .fetch_add(cache_read_tokens as u64, Ordering::Relaxed);
+            }
+        }
+
+        // Record time-series event
+        let elapsed_secs = self.start_time.elapsed().as_secs();
+        let event = TokenEvent {
+            elapsed_secs,
+            model: model.to_string(),
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+        };
+        let mut events = self.token_events.write();
+        if events.len() >= MAX_TOKEN_EVENTS {
+            events.pop_front();
+        }
+        events.push_back(event);
+    }
+
     /// Get uptime
     pub fn uptime(&self) -> Duration {
         self.start_time.elapsed()
@@ -128,6 +223,12 @@ impl Stats {
         self.rate_history.read().get_history(now_secs)
     }
 
+    /// Get recent token events for time-series display
+    #[allow(dead_code)]
+    pub fn get_token_events(&self) -> Vec<TokenEvent> {
+        self.token_events.read().iter().cloned().collect()
+    }
+
     /// Get summary statistics
     pub fn summary(&self) -> StatsSummary {
         StatsSummary {
@@ -136,16 +237,33 @@ impl Stats {
             models: self.get_model_stats(),
             endpoints: self.get_endpoint_stats(),
             rate_history: self.get_rate_history(),
+            token_usage: self.get_token_usage(),
         }
     }
 
     fn get_model_stats(&self) -> Vec<ModelStats> {
         let requests = self.requests.read();
+        let token_counters = self.token_counters.read();
         requests
             .iter()
-            .map(|(model, count)| ModelStats {
-                model: model.clone(),
-                requests: count.load(Ordering::Relaxed),
+            .map(|(model, count)| {
+                let (input, output, cache_read) =
+                    if let Some(tc) = token_counters.get(model) {
+                        (
+                            tc.input_tokens.load(Ordering::Relaxed),
+                            tc.output_tokens.load(Ordering::Relaxed),
+                            tc.cache_read_tokens.load(Ordering::Relaxed),
+                        )
+                    } else {
+                        (0, 0, 0)
+                    };
+                ModelStats {
+                    model: model.clone(),
+                    requests: count.load(Ordering::Relaxed),
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_read_tokens: cache_read,
+                }
             })
             .collect()
     }
@@ -159,6 +277,23 @@ impl Stats {
                 requests: count.load(Ordering::Relaxed),
             })
             .collect()
+    }
+
+    fn get_token_usage(&self) -> TokenUsageSummary {
+        let counters = self.token_counters.read();
+        let mut total_input = 0u64;
+        let mut total_output = 0u64;
+        let mut total_cache_read = 0u64;
+        for tc in counters.values() {
+            total_input += tc.input_tokens.load(Ordering::Relaxed);
+            total_output += tc.output_tokens.load(Ordering::Relaxed);
+            total_cache_read += tc.cache_read_tokens.load(Ordering::Relaxed);
+        }
+        TokenUsageSummary {
+            total_input_tokens: total_input,
+            total_output_tokens: total_output,
+            total_cache_read_tokens: total_cache_read,
+        }
     }
 
     fn increment_map(&self, map: &RwLock<HashMap<String, AtomicU64>>, key: &str) {
@@ -189,18 +324,29 @@ pub struct StatsSummary {
     pub models: Vec<ModelStats>,
     pub endpoints: Vec<EndpointStats>,
     pub rate_history: Vec<u64>,
+    pub token_usage: TokenUsageSummary,
 }
 
 #[derive(Debug, Clone)]
 pub struct ModelStats {
     pub model: String,
     pub requests: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct EndpointStats {
     pub endpoint: String,
     pub requests: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenUsageSummary {
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_read_tokens: u64,
 }
 
 impl StatsSummary {
@@ -212,12 +358,20 @@ impl StatsSummary {
             "models": self.models.iter().map(|m| serde_json::json!({
                 "model": m.model,
                 "requests": m.requests,
+                "input_tokens": m.input_tokens,
+                "output_tokens": m.output_tokens,
+                "cache_read_tokens": m.cache_read_tokens,
             })).collect::<Vec<_>>(),
             "endpoints": self.endpoints.iter().map(|e| serde_json::json!({
                 "endpoint": e.endpoint,
                 "requests": e.requests,
             })).collect::<Vec<_>>(),
             "rate_history": self.rate_history,
+            "token_usage": {
+                "total_input_tokens": self.token_usage.total_input_tokens,
+                "total_output_tokens": self.token_usage.total_output_tokens,
+                "total_cache_read_tokens": self.token_usage.total_cache_read_tokens,
+            },
         })
     }
 }
@@ -256,5 +410,53 @@ mod tests {
 
         assert!(json["uptime_seconds"].as_u64().is_some());
         assert_eq!(json["total_requests"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn test_stats_token_usage() {
+        let stats = Stats::new();
+        stats.record_request("claude-sonnet-4-5", "/v1/messages");
+        stats.record_token_usage("claude-sonnet-4-5", 100, 200, 50);
+        stats.record_token_usage("claude-sonnet-4-5", 150, 300, 0);
+        stats.record_token_usage("gemini-3-flash", 80, 160, 0);
+
+        let summary = stats.summary();
+
+        // Check per-model tokens
+        let sonnet = summary
+            .models
+            .iter()
+            .find(|m| m.model == "claude-sonnet-4-5")
+            .unwrap();
+        assert_eq!(sonnet.input_tokens, 250);
+        assert_eq!(sonnet.output_tokens, 500);
+        assert_eq!(sonnet.cache_read_tokens, 50);
+
+        // Check totals
+        assert_eq!(summary.token_usage.total_input_tokens, 330);
+        assert_eq!(summary.token_usage.total_output_tokens, 660);
+        assert_eq!(summary.token_usage.total_cache_read_tokens, 50);
+
+        // Check events
+        let events = stats.get_token_events();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].model, "claude-sonnet-4-5");
+        assert_eq!(events[2].model, "gemini-3-flash");
+    }
+
+    #[test]
+    fn test_stats_token_json() {
+        let stats = Stats::new();
+        stats.record_request("test-model", "/v1/messages");
+        stats.record_token_usage("test-model", 100, 200, 0);
+
+        let json = stats.summary().to_json();
+        let token_usage = &json["token_usage"];
+        assert_eq!(token_usage["total_input_tokens"].as_u64(), Some(100));
+        assert_eq!(token_usage["total_output_tokens"].as_u64(), Some(200));
+
+        let model = &json["models"][0];
+        assert_eq!(model["input_tokens"].as_u64(), Some(100));
+        assert_eq!(model["output_tokens"].as_u64(), Some(200));
     }
 }

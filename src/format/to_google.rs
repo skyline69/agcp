@@ -1,14 +1,14 @@
 use crate::format::anthropic::{
-    ContentBlock, Message, MessageContent, MessagesRequest, Role, SystemPrompt, Tool,
+    ContentBlock, Message, MessageContent, MessagesRequest, Role, SystemPrompt, Tool, ToolChoice,
 };
 use crate::format::google::{
-    Content, FunctionCall, FunctionCallPart, FunctionDeclaration, FunctionResponse,
-    FunctionResponsePart, GenerateContentRequest, GenerationConfig, GoogleTool, InlineData,
-    InlineDataPart, Part, TextPart, ThinkingConfig, ThoughtPart,
+    Content, FunctionCall, FunctionCallPart, FunctionCallingConfig, FunctionDeclaration,
+    FunctionResponse, FunctionResponsePart, GenerateContentRequest, GenerationConfig, GoogleTool,
+    InlineData, InlineDataPart, Part, TextPart, ThinkingConfig, ThoughtPart, ToolConfig,
 };
 use crate::format::signature_cache::{
-    GEMINI_SKIP_SIGNATURE, MIN_SIGNATURE_LENGTH, ModelFamily, get_cached_tool_signature,
-    is_signature_compatible,
+    get_cached_tool_signature, is_signature_compatible, ModelFamily, GEMINI_SKIP_SIGNATURE,
+    MIN_SIGNATURE_LENGTH,
 };
 use crate::models::{get_model_family, is_thinking_model};
 
@@ -52,11 +52,14 @@ pub fn convert_request(request: &MessagesRequest) -> GenerateContentRequest {
         }
     });
 
+    let tool_config = request.tool_choice.as_ref().map(convert_tool_choice);
+
     GenerateContentRequest {
         contents,
         system_instruction,
         generation_config,
         tools,
+        tool_config,
         session_id: None,
     }
 }
@@ -221,6 +224,30 @@ fn convert_tools(tools: &[Tool]) -> Vec<GoogleTool> {
     }]
 }
 
+/// Convert Anthropic tool_choice to Google's ToolConfig.
+fn convert_tool_choice(choice: &ToolChoice) -> ToolConfig {
+    match choice {
+        ToolChoice::Auto => ToolConfig {
+            function_calling_config: FunctionCallingConfig {
+                mode: "AUTO".to_string(),
+                allowed_function_names: None,
+            },
+        },
+        ToolChoice::Any => ToolConfig {
+            function_calling_config: FunctionCallingConfig {
+                mode: "ANY".to_string(),
+                allowed_function_names: None,
+            },
+        },
+        ToolChoice::Tool { name } => ToolConfig {
+            function_calling_config: FunctionCallingConfig {
+                mode: "ANY".to_string(),
+                allowed_function_names: Some(vec![name.clone()]),
+            },
+        },
+    }
+}
+
 // Allowlist sanitizer - Cloud Code API only accepts a subset of JSON Schema
 fn sanitize_schema(schema: &serde_json::Value) -> serde_json::Value {
     match schema {
@@ -353,6 +380,7 @@ mod tests {
             stop_sequences: None,
             stream: false,
             tools: None,
+            tool_choice: None,
         }
     }
 

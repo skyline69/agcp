@@ -109,6 +109,7 @@ pub fn responses_to_anthropic(request: &ResponsesRequest) -> MessagesRequest {
         stop_sequences: None,
         stream: request.stream,
         tools,
+        tool_choice: None,
     }
 }
 

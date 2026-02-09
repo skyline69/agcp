@@ -12,9 +12,12 @@ pub struct StatsPanel {
     pub active_accounts: usize,
     pub total_accounts: usize,
     pub quota_remaining: Option<f64>,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
 }
 
 impl StatsPanel {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         total_requests: u64,
         requests_per_min: f64,
@@ -22,6 +25,8 @@ impl StatsPanel {
         active_accounts: usize,
         total_accounts: usize,
         quota_remaining: Option<f64>,
+        total_input_tokens: u64,
+        total_output_tokens: u64,
     ) -> Self {
         Self {
             total_requests,
@@ -30,6 +35,8 @@ impl StatsPanel {
             active_accounts,
             total_accounts,
             quota_remaining,
+            total_input_tokens,
+            total_output_tokens,
         }
     }
 }
@@ -96,6 +103,21 @@ impl Widget for StatsPanel {
             ]),
         ];
 
+        // Row 4: Token usage (only if there's data)
+        let total_tokens = self.total_input_tokens + self.total_output_tokens;
+        if total_tokens > 0 {
+            lines.push(Line::from(vec![
+                Span::styled("Tokens ", theme::dim()),
+                Span::styled(
+                    format_tokens(self.total_input_tokens),
+                    Style::default().fg(theme::SECONDARY),
+                ),
+                Span::styled(" in ", theme::dim()),
+                Span::styled(format_tokens(self.total_output_tokens), theme::primary()),
+                Span::styled(" out", theme::dim()),
+            ]));
+        }
+
         // Ensure we don't overflow the available height
         lines.truncate(inner.height as usize);
 
@@ -125,5 +147,16 @@ fn format_duration(ms: u64) -> String {
     } else {
         let secs = ms / 1000;
         format!("{}m{}s", secs / 60, secs % 60)
+    }
+}
+
+/// Format token count with K/M suffix
+fn format_tokens(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 10_000 {
+        format!("{:.1}K", count as f64 / 1_000.0)
+    } else {
+        format_number(count)
     }
 }

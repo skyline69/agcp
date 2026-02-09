@@ -34,6 +34,7 @@ pub enum Tab {
     Config,
     Mappings,
     Quota,
+    Usage,
     About,
 }
 
@@ -46,6 +47,7 @@ impl Tab {
             Tab::Config,
             Tab::Mappings,
             Tab::Quota,
+            Tab::Usage,
             Tab::About,
         ]
     }
@@ -58,6 +60,7 @@ impl Tab {
             Tab::Config => "Config",
             Tab::Mappings => "Mappings",
             Tab::Quota => "Quota",
+            Tab::Usage => "Usage",
             Tab::About => "About",
         }
     }
@@ -69,7 +72,8 @@ impl Tab {
             Tab::Accounts => Tab::Config,
             Tab::Config => Tab::Mappings,
             Tab::Mappings => Tab::Quota,
-            Tab::Quota => Tab::About,
+            Tab::Quota => Tab::Usage,
+            Tab::Usage => Tab::About,
             Tab::About => Tab::Overview,
         }
     }
@@ -82,7 +86,8 @@ impl Tab {
             Tab::Config => Tab::Accounts,
             Tab::Mappings => Tab::Config,
             Tab::Quota => Tab::Mappings,
-            Tab::About => Tab::Quota,
+            Tab::Usage => Tab::Quota,
+            Tab::About => Tab::Usage,
         }
     }
 }
@@ -264,6 +269,10 @@ pub struct App {
     pub cached_requests_per_min: f64,
     /// Cached uptime string (refreshed alongside logs every 500ms)
     pub cached_uptime: String,
+    /// Cached token usage stats (fetched from /stats endpoint)
+    pub cached_token_stats: Option<super::data::TokenStats>,
+    /// Last time token stats were fetched
+    last_token_stats_refresh: Instant,
     /// Last tab area width used for tab_areas calculation (for invalidation)
     cached_tabs_area: Rect,
     // Log filtering and search state
@@ -402,6 +411,8 @@ impl App {
             cached_avg_response_ms: None,
             cached_requests_per_min: 0.0,
             cached_uptime: String::from("00:00:00"),
+            cached_token_stats: None,
+            last_token_stats_refresh: Instant::now() - Duration::from_secs(10),
             cached_tabs_area: Rect::default(),
             log_level_filter: [true; 4],
             log_account_filter: None,
@@ -492,6 +503,15 @@ impl App {
         self.cached_rate_history = super::data::build_rate_history(&self.logs, now);
         self.cached_avg_response_ms = super::data::calculate_avg_response_time(&self.logs);
         self.cached_requests_per_min = super::data::calculate_requests_per_min(&self.logs, now);
+    }
+
+    /// Refresh token stats from the server's /stats endpoint (every 5 seconds)
+    pub fn maybe_refresh_token_stats(&mut self) {
+        if self.last_token_stats_refresh.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        self.last_token_stats_refresh = Instant::now();
+        self.cached_token_stats = super::data::DataProvider::fetch_token_stats();
     }
 
     /// Rebuild the filtered log indices based on current filter/search state
@@ -1327,6 +1347,10 @@ impl App {
                 self.trigger_tab_effect = true;
             }
             KeyCode::Char('7') => {
+                self.current_tab = Tab::Usage;
+                self.trigger_tab_effect = true;
+            }
+            KeyCode::Char('8') => {
                 self.current_tab = Tab::About;
                 self.trigger_tab_effect = true;
             }
@@ -2400,6 +2424,9 @@ pub fn run() -> io::Result<()> {
         // Refresh quota data periodically (every 60 seconds)
         app.maybe_refresh_quota();
 
+        // Refresh token usage stats periodically (every 5 seconds)
+        app.maybe_refresh_token_stats();
+
         // Poll for background tier refresh completion
         app.poll_tier_refresh();
 
@@ -2528,6 +2555,7 @@ fn render(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         Tab::Config => super::views::config::render(frame, content_area, app),
         Tab::Mappings => super::views::mappings::render(frame, content_area, app),
         Tab::Quota => super::views::quota::render(frame, content_area, app.get_active_quota_data()),
+        Tab::Usage => super::views::usage::render(frame, content_area, app),
         Tab::About => {
             // Trigger update check on first visit to About tab
             app.maybe_check_for_updates();

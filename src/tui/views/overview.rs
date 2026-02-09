@@ -62,6 +62,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(status_panel, top_chunks[0]);
 
     // Stats panel - comprehensive stats
+    let (total_in, total_out) = app
+        .cached_token_stats
+        .as_ref()
+        .map(|t| (t.total_input_tokens, t.total_output_tokens))
+        .unwrap_or((0, 0));
     let stats_panel = StatsPanel::new(
         log_request_count,
         requests_per_min,
@@ -69,6 +74,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         active_accounts,
         total_accounts,
         quota_remaining,
+        total_in,
+        total_out,
     );
     frame.render_widget(stats_panel, top_chunks[1]);
 

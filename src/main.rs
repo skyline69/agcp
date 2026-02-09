@@ -2168,7 +2168,25 @@ async fn run_stats_command() {
                 for model in models {
                     let name = model["model"].as_str().unwrap_or("unknown");
                     let reqs = model["requests"].as_u64().unwrap_or(0);
-                    println!("  {}: {} reqs", name, reqs);
+                    let input = model["input_tokens"].as_u64().unwrap_or(0);
+                    let output = model["output_tokens"].as_u64().unwrap_or(0);
+                    let cache = model["cache_read_tokens"].as_u64().unwrap_or(0);
+                    if input > 0 || output > 0 {
+                        println!(
+                            "  {}: {} reqs, {} in / {} out{}",
+                            name,
+                            reqs,
+                            format_token_count(input),
+                            format_token_count(output),
+                            if cache > 0 {
+                                format!(" ({} cached)", format_token_count(cache))
+                            } else {
+                                String::new()
+                            }
+                        );
+                    } else {
+                        println!("  {}: {} reqs", name, reqs);
+                    }
                 }
             }
 
@@ -2183,6 +2201,26 @@ async fn run_stats_command() {
                     let reqs = endpoint["requests"].as_u64().unwrap_or(0);
                     println!("  {}: {} reqs", path, reqs);
                 }
+            }
+
+            // Display token usage summary
+            let token_usage = &requests["token_usage"];
+            let total_input = token_usage["total_input_tokens"].as_u64().unwrap_or(0);
+            let total_output = token_usage["total_output_tokens"].as_u64().unwrap_or(0);
+            let total_cache = token_usage["total_cache_read_tokens"].as_u64().unwrap_or(0);
+
+            if total_input > 0 || total_output > 0 {
+                println!();
+                println!("{}Token Usage:{}", BOLD, RESET);
+                println!("  Input:  {}", format_token_count(total_input));
+                println!("  Output: {}", format_token_count(total_output));
+                if total_cache > 0 {
+                    println!("  Cached: {}", format_token_count(total_cache));
+                }
+                println!(
+                    "  Total:  {}",
+                    format_token_count(total_input + total_output)
+                );
             }
         }
         Err(_) => {
@@ -2239,6 +2277,17 @@ fn format_uptime(secs: u64) -> String {
         format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     } else {
         format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
+    }
+}
+
+/// Format a token count with K/M suffixes for readability
+fn format_token_count(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 10_000 {
+        format!("{:.1}K", tokens as f64 / 1_000.0)
+    } else {
+        format!("{}", tokens)
     }
 }
 

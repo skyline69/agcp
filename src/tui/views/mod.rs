@@ -5,3 +5,4 @@ pub mod logs;
 pub mod mappings;
 pub mod overview;
 pub mod quota;
+pub mod usage;

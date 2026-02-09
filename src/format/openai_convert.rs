@@ -145,6 +145,7 @@ pub fn openai_to_anthropic(request: &ChatCompletionRequest) -> MessagesRequest {
         stop_sequences,
         stream: request.stream,
         tools,
+        tool_choice: None,
     }
 }
 

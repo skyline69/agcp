@@ -475,4 +475,101 @@ impl DataProvider {
     pub fn get_log_path() -> PathBuf {
         crate::config::Config::dir().join("agcp.log")
     }
+
+    /// Fetch token usage stats from the running server's /stats endpoint.
+    /// Returns None if the server is not running or the request fails.
+    pub fn fetch_token_stats() -> Option<TokenStats> {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let config = crate::config::get_config();
+        let addr = format!("{}:{}", config.server.host, config.server.port);
+
+        let mut stream = TcpStream::connect_timeout(
+            &addr.parse().ok()?,
+            Duration::from_millis(500),
+        )
+        .ok()?;
+        stream.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
+        stream.set_write_timeout(Some(Duration::from_millis(500))).ok()?;
+
+        let request = format!(
+            "GET /stats HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            addr
+        );
+        stream.write_all(request.as_bytes()).ok()?;
+
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).ok()?;
+
+        let response = String::from_utf8_lossy(&buf);
+        // Find JSON body after HTTP headers
+        let json_start = response.find("\r\n\r\n")? + 4;
+        let body = &response[json_start..];
+        // Handle chunked transfer encoding — find the JSON object
+        let json_str = if let Some(start) = body.find('{') {
+            // Find the matching closing brace
+            let sub = &body[start..];
+            // Use the last '}' in the response as the end
+            let end = sub.rfind('}')?;
+            &sub[..=end]
+        } else {
+            return None;
+        };
+
+        let json: serde_json::Value = serde_json::from_str(json_str).ok()?;
+        let requests = &json["requests"];
+
+        // Parse per-model token stats
+        let mut models = Vec::new();
+        if let Some(model_arr) = requests["models"].as_array() {
+            for m in model_arr {
+                let input = m["input_tokens"].as_u64().unwrap_or(0);
+                let output = m["output_tokens"].as_u64().unwrap_or(0);
+                let cache = m["cache_read_tokens"].as_u64().unwrap_or(0);
+                if input > 0 || output > 0 {
+                    models.push(ModelTokenStats {
+                        model: m["model"].as_str().unwrap_or("unknown").to_string(),
+                        input_tokens: input,
+                        output_tokens: output,
+                        cache_read_tokens: cache,
+                    });
+                }
+            }
+        }
+
+        // Parse totals
+        let token_usage = &requests["token_usage"];
+        let total_input = token_usage["total_input_tokens"].as_u64().unwrap_or(0);
+        let total_output = token_usage["total_output_tokens"].as_u64().unwrap_or(0);
+        let total_cache = token_usage["total_cache_read_tokens"].as_u64().unwrap_or(0);
+
+        Some(TokenStats {
+            models,
+            total_input_tokens: total_input,
+            total_output_tokens: total_output,
+            total_cache_read_tokens: total_cache,
+        })
+    }
 }
+
+/// Per-model token usage statistics
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ModelTokenStats {
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+}
+
+/// Aggregated token usage stats from the server
+#[derive(Debug, Clone)]
+pub struct TokenStats {
+    pub models: Vec<ModelTokenStats>,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_read_tokens: u64,
+}
+
