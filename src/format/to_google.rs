@@ -7,8 +7,8 @@ use crate::format::google::{
     InlineData, InlineDataPart, Part, TextPart, ThinkingConfig, ThoughtPart, ToolConfig,
 };
 use crate::format::signature_cache::{
-    GEMINI_SKIP_SIGNATURE, MIN_SIGNATURE_LENGTH, ModelFamily, get_cached_tool_signature,
-    is_signature_compatible,
+    get_cached_tool_signature, is_signature_compatible, ModelFamily, GEMINI_SKIP_SIGNATURE,
+    MIN_SIGNATURE_LENGTH,
 };
 use crate::models::{get_model_family, is_thinking_model};
 
@@ -35,8 +35,12 @@ pub fn convert_request(request: &MessagesRequest) -> GenerateContentRequest {
         None
     };
 
+    // Google Cloud Code has a lower maxOutputTokens limit than the Anthropic API.
+    // The exact limit is 64000 — values above this cause INVALID_ARGUMENT errors.
+    let max_output_tokens = request.max_tokens.min(64000);
+
     let generation_config = Some(GenerationConfig {
-        max_output_tokens: Some(request.max_tokens),
+        max_output_tokens: Some(max_output_tokens),
         temperature: request.temperature,
         top_p: request.top_p,
         top_k: request.top_k,
