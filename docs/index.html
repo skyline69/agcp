@@ -40,6 +40,9 @@
           <a href="https://opencode.ai" class="opacity-40 hover:opacity-70 transition-opacity" title="OpenCode">
             <img src="images/opencode-wordmark-dark.svg" alt="OpenCode" style="width:80px;height:auto" class="select-none pointer-events-none" draggable="false">
           </a>
+          <a href="https://charm.sh/crush" class="opacity-40 hover:opacity-70 transition-opacity" title="Crush">
+            <img src="images/charm.svg" alt="Crush" style="width:80px;height:auto" class="select-none pointer-events-none" draggable="false">
+          </a>
         </div>
         <p class="text-gray-600 text-xs mt-6">and many more...</p>
       </div>
@@ -60,7 +63,7 @@
         But these models are locked behind Google's own API format, so you can't use them with your favorite coding tools directly.
       </p>
       <p>
-        <span class="text-white">AGCP bridges that gap.</span> It translates the Anthropic API format (used by Claude Code, OpenCode, Cursor, Cline, and others)
+        <span class="text-white">AGCP bridges that gap.</span> It translates the Anthropic API format (used by Claude Code, OpenCode, Crush, Cursor, Cline, and others)
         into Google's Cloud Code API format. Point your tool at AGCP, and it handles the rest.
       </p>
       <div class="bg-surface border border-border rounded-lg p-6 mt-2">
@@ -90,7 +93,7 @@
       <div class="group p-8 bg-surface border border-border rounded-lg hover:border-cyan/20 transition-colors">
         <svg class="w-8 h-8 text-cyan mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3M4.5 19.5h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15A2.25 2.25 0 002.25 6.75v10.5A2.25 2.25 0 004.5 19.5z"/></svg>
         <h3 class="text-white text-base font-bold mb-3">API Compatible</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">Works with Claude Code, OpenCode, Cursor, Cline, and any Anthropic API client. OpenAI-compatible endpoint included.</p>
+        <p class="text-gray-400 text-sm leading-relaxed">Works with Claude Code, OpenCode, Crush, Cursor, Cline, and any Anthropic API client. OpenAI-compatible endpoint included.</p>
       </div>
 
       <div class="group p-8 bg-surface border border-border rounded-lg hover:border-cyan/20 transition-colors">
@@ -114,7 +117,7 @@
       <div class="group p-8 bg-surface border border-border rounded-lg hover:border-cyan/20 transition-colors">
         <svg class="w-8 h-8 text-cyan mb-4" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 8.25V18a2.25 2.25 0 002.25 2.25h13.5A2.25 2.25 0 0021 18V8.25m-18 0V6a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 6v2.25m-18 0h18M5.25 6h.008v.008H5.25V6zM7.5 6h.008v.008H7.5V6zm2.25 0h.008v.008H9.75V6z"/><path stroke-linecap="round" stroke-linejoin="round" d="M6.75 14.25h3m-3 3h6"/></svg>
         <h3 class="text-white text-base font-bold mb-3">Interactive TUI</h3>
-        <p class="text-gray-400 text-sm leading-relaxed">Terminal UI with real-time charts, log viewer, config editor, and quota donut charts. Run <code class="text-cyan/70">agcp tui</code>.</p>
+        <p class="text-gray-400 text-sm leading-relaxed">Terminal UI with real-time charts, token usage tracking, log viewer, config editor, and quota donut charts. Run <code class="text-cyan/70">agcp tui</code>.</p>
       </div>
 
       <div class="group p-8 bg-surface border border-border rounded-lg hover:border-cyan/20 transition-colors">
@@ -186,7 +189,7 @@
     </div>
 
     <!-- All tabs -->
-    <div class="mt-16 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4">
+    <div class="mt-16 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
       <div class="bg-surface border border-border rounded-lg p-4 text-center">
         <p class="text-white text-sm font-bold mb-1">Overview</p>
         <p class="text-gray-500 text-xs">Live stats</p>
@@ -210,6 +213,10 @@
       <div class="bg-surface border border-border rounded-lg p-4 text-center">
         <p class="text-white text-sm font-bold mb-1">Quota</p>
         <p class="text-gray-500 text-xs">Donut charts</p>
+      </div>
+      <div class="bg-surface border border-border rounded-lg p-4 text-center">
+        <p class="text-white text-sm font-bold mb-1">Usage</p>
+        <p class="text-gray-500 text-xs">Token charts</p>
       </div>
       <div class="bg-surface border border-border rounded-lg p-4 text-center">
         <p class="text-white text-sm font-bold mb-1">About</p>
@@ -413,7 +420,7 @@
           <p class="cmd-prompt"><span class="text-gray-300">agcp</span></p>
           <p class="text-gray-600 mt-4"># Configure your AI tool</p>
           <p class="cmd-prompt"><span class="text-gray-300">agcp setup</span></p>
-          <p class="text-gray-600 mt-2"># Supports: Claude Code, OpenCode, Cursor, Cline, Codex</p>
+          <p class="text-gray-600 mt-2"># Supports: Claude Code, OpenCode, Crush, Cursor, Cline, Codex</p>
         </div>
       </div>
     </div>
