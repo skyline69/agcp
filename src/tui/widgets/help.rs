@@ -5,9 +5,9 @@ use crate::tui::theme;
 
 /// Render a help overlay in the center of the screen
 pub fn render(frame: &mut Frame, area: Rect) {
-    // Calculate centered popup size
-    let popup_width = 50.min(area.width.saturating_sub(4));
-    let popup_height = 30.min(area.height.saturating_sub(4));
+    // Two-column layout: wider but shorter
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = 25.min(area.height.saturating_sub(4));
 
     let popup_area = Rect {
         x: area.x + (area.width.saturating_sub(popup_width)) / 2,
@@ -30,7 +30,14 @@ pub fn render(frame: &mut Frame, area: Rect) {
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let help_text = vec![
+    // Split inner area into two columns
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner);
+
+    // Left column: Navigation, Overview, Logs, Accounts
+    let left_text = vec![
         Line::from(Span::styled("Navigation", theme::primary())),
         Line::from("  Tab / < >     Switch tabs"),
         Line::from("  1-7           Jump to tab"),
@@ -54,11 +61,33 @@ pub fn render(frame: &mut Frame, area: Rect) {
         Line::from("  s             Cycle sort"),
         Line::from("  c             Clear filters"),
         Line::from("  r             Refresh"),
+    ];
+
+    // Right column: Config, Mappings, Usage, General
+    let right_text = vec![
+        Line::from(Span::styled("Config Tab", theme::primary())),
+        Line::from("  Enter         Edit field"),
+        Line::from("  Space         Toggle boolean"),
+        Line::from("  s             Save config"),
+        Line::from("  r             Restart daemon"),
+        Line::from(""),
+        Line::from(Span::styled("Mappings Tab", theme::primary())),
+        Line::from("  p             Cycle preset"),
+        Line::from("  Enter         Edit pattern"),
+        Line::from("  < >           Cycle target"),
+        Line::from("  a             Add rule"),
+        Line::from("  d             Delete rule"),
+        Line::from("  b             Background model"),
+        Line::from("  s             Save mappings"),
+        Line::from(""),
+        Line::from(Span::styled("Usage Tab", theme::primary())),
+        Line::from("  r             Reset history"),
         Line::from(""),
         Line::from(Span::styled("General", theme::primary())),
         Line::from("  ?             Toggle help"),
         Line::from("  q / Esc       Quit"),
     ];
 
-    frame.render_widget(Paragraph::new(help_text), inner);
+    frame.render_widget(Paragraph::new(left_text), columns[0]);
+    frame.render_widget(Paragraph::new(right_text), columns[1]);
 }
