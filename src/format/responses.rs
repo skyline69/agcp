@@ -215,7 +215,7 @@ pub struct OutputTokensDetails {
 #[serde(tag = "type")]
 pub enum ResponseStreamEvent {
     #[serde(rename = "response.created")]
-    ResponseCreated { response: ResponsesResponse },
+    ResponseCreated { response: Box<ResponsesResponse> },
 
     #[serde(rename = "response.output_item.added")]
     OutputItemAdded {
@@ -258,5 +258,5 @@ pub enum ResponseStreamEvent {
     },
 
     #[serde(rename = "response.completed")]
-    ResponseCompleted { response: ResponsesResponse },
+    ResponseCompleted { response: Box<ResponsesResponse> },
 }

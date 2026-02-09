@@ -1,7 +1,7 @@
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 /// Error type for configuration loading
 #[derive(Debug)]
@@ -66,17 +66,20 @@ impl std::error::Error for ConfigError {
 }
 
 /// Global config instance (uses default if load fails at static init)
-static GLOBAL_CONFIG: LazyLock<RwLock<Config>> =
-    LazyLock::new(|| RwLock::new(Config::load().unwrap_or_default()));
+static GLOBAL_CONFIG: LazyLock<RwLock<Arc<Config>>> =
+    LazyLock::new(|| RwLock::new(Arc::new(Config::load().unwrap_or_default())));
 
-/// Get a reference to the global config
-pub fn get_config() -> Config {
-    GLOBAL_CONFIG.read().clone()
+/// Get a cheaply-cloneable reference to the global config.
+///
+/// Returns an `Arc<Config>` instead of cloning the entire struct,
+/// avoiding deep copies on every request.
+pub fn get_config() -> Arc<Config> {
+    Arc::clone(&GLOBAL_CONFIG.read())
 }
 
 /// Initialize global config with overrides
 pub fn init_config(config: Config) {
-    *GLOBAL_CONFIG.write() = config;
+    *GLOBAL_CONFIG.write() = Arc::new(config);
 }
 
 /// AGCP configuration loaded from `~/.config/agcp/config.toml`.

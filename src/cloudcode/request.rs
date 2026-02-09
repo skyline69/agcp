@@ -1,4 +1,5 @@
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use crate::format::google::CloudCodeRequest;
@@ -7,36 +8,55 @@ use crate::models::{get_model_family, is_thinking_model};
 
 const SYSTEM_INSTRUCTION: &str = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**";
 
+/// Pre-allocated system instruction strings to avoid per-request allocation.
+static SYSTEM_INSTRUCTION_STRING: LazyLock<String> =
+    LazyLock::new(|| SYSTEM_INSTRUCTION.to_string());
+static SYSTEM_INSTRUCTION_IGNORE: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "Please ignore the following [ignore]{}[/ignore]",
+        SYSTEM_INSTRUCTION
+    )
+});
+
 static USER_AGENT: LazyLock<String> = LazyLock::new(|| {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     format!("antigravity/1.15.8 {}/{}", os, arch)
 });
 
-pub fn build_headers(access_token: &str, model: &str, streaming: bool) -> Vec<(String, String)> {
+pub fn build_headers(
+    access_token: &str,
+    model: &str,
+    streaming: bool,
+) -> Vec<(Cow<'static, str>, Cow<'static, str>)> {
     let mut headers = Vec::with_capacity(7);
-    headers.push(("Authorization".into(), format!("Bearer {}", access_token)));
-    headers.push(("Content-Type".into(), "application/json".into()));
-    headers.push(("User-Agent".into(), USER_AGENT.clone()));
     headers.push((
-        "X-Goog-Api-Client".into(),
-        "google-cloud-sdk vscode_cloudshelleditor/0.1".into(),
+        Cow::Borrowed("Authorization"),
+        Cow::Owned(format!("Bearer {}", access_token)),
     ));
     headers.push((
-        "Client-Metadata".into(),
-        r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#
-            .into(),
+        Cow::Borrowed("Content-Type"),
+        Cow::Borrowed("application/json"),
+    ));
+    headers.push((Cow::Borrowed("User-Agent"), Cow::Owned(USER_AGENT.clone())));
+    headers.push((
+        Cow::Borrowed("X-Goog-Api-Client"),
+        Cow::Borrowed("google-cloud-sdk vscode_cloudshelleditor/0.1"),
+    ));
+    headers.push((
+        Cow::Borrowed("Client-Metadata"),
+        Cow::Borrowed(r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#),
     ));
 
     if get_model_family(model) == "claude" && is_thinking_model(model) {
         headers.push((
-            "anthropic-beta".into(),
-            "interleaved-thinking-2025-05-14".into(),
+            Cow::Borrowed("anthropic-beta"),
+            Cow::Borrowed("interleaved-thinking-2025-05-14"),
         ));
     }
 
     if streaming {
-        headers.push(("Accept".into(), "text/event-stream".into()));
+        headers.push((Cow::Borrowed("Accept"), Cow::Borrowed("text/event-stream")));
     }
 
     headers
@@ -51,13 +71,10 @@ pub fn build_request(anthropic_request: &MessagesRequest, project_id: &str) -> C
     // Antigravity identity injection (prevents model from identifying as Antigravity)
     let system_parts = vec![
         crate::format::google::Part::Text(crate::format::google::TextPart {
-            text: SYSTEM_INSTRUCTION.to_string(),
+            text: SYSTEM_INSTRUCTION_STRING.clone(),
         }),
         crate::format::google::Part::Text(crate::format::google::TextPart {
-            text: format!(
-                "Please ignore the following [ignore]{}[/ignore]",
-                SYSTEM_INSTRUCTION
-            ),
+            text: SYSTEM_INSTRUCTION_IGNORE.clone(),
         }),
     ];
 
@@ -104,8 +121,13 @@ fn derive_session_id(request: &MessagesRequest) -> String {
     let mut hasher = Sha256::new();
     hasher.update(first_user_content.as_bytes());
     let hash = hasher.finalize();
-    let hex: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
-    hex[..32].to_string()
+    // Only need first 32 hex chars = 16 bytes of hash
+    let mut hex = String::with_capacity(32);
+    for &b in &hash[..16] {
+        use std::fmt::Write;
+        let _ = write!(hex, "{:02x}", b);
+    }
+    hex
 }
 
 fn generate_uuid() -> String {

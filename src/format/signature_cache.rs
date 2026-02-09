@@ -9,6 +9,9 @@ pub const MIN_SIGNATURE_LENGTH: usize = 50;
 /// Cache TTL for signatures (2 hours)
 const SIGNATURE_CACHE_TTL: Duration = Duration::from_secs(2 * 60 * 60);
 
+/// Maximum entries per signature cache to prevent unbounded growth
+const MAX_SIGNATURE_CACHE_ENTRIES: usize = 1000;
+
 /// Skip signature validator sentinel value for Gemini
 pub const GEMINI_SKIP_SIGNATURE: &str = "skip_thought_signature_validator";
 
@@ -21,7 +24,7 @@ pub enum ModelFamily {
 
 impl ModelFamily {
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
+        match s.to_ascii_lowercase().as_str() {
             "claude" => Some(Self::Claude),
             "gemini" => Some(Self::Gemini),
             _ => None,
@@ -56,6 +59,30 @@ static TOOL_SIGNATURE_CACHE: LazyLock<RwLock<HashMap<String, CacheEntry<String>>
 static THINKING_SIGNATURE_CACHE: LazyLock<RwLock<HashMap<String, CacheEntry<ModelFamily>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
+/// Evict expired entries from a signature cache. If still over capacity, remove oldest entries.
+fn evict_if_needed<T>(cache: &mut HashMap<String, CacheEntry<T>>) {
+    if cache.len() < MAX_SIGNATURE_CACHE_ENTRIES {
+        return;
+    }
+
+    // First pass: remove expired entries
+    cache.retain(|_, entry| !entry.is_expired());
+
+    // If still over capacity, remove oldest entries until under the limit
+    if cache.len() >= MAX_SIGNATURE_CACHE_ENTRIES {
+        let mut entries: Vec<(String, Instant)> = cache
+            .iter()
+            .map(|(k, v)| (k.clone(), v.timestamp))
+            .collect();
+        entries.sort_by_key(|(_, ts)| *ts);
+
+        let to_remove = cache.len() - (MAX_SIGNATURE_CACHE_ENTRIES / 2);
+        for (key, _) in entries.into_iter().take(to_remove) {
+            cache.remove(&key);
+        }
+    }
+}
+
 /// Cache a signature for a tool_use_id
 ///
 /// When Gemini returns a functionCall with a thoughtSignature, we cache it
@@ -70,6 +97,7 @@ pub fn cache_tool_signature(tool_use_id: &str, signature: &str) {
     }
 
     let mut cache = TOOL_SIGNATURE_CACHE.write();
+    evict_if_needed(&mut cache);
     cache.insert(
         tool_use_id.to_string(),
         CacheEntry::new(signature.to_string()),
@@ -107,6 +135,7 @@ pub fn cache_thinking_signature(signature: &str, family: ModelFamily) {
     }
 
     let mut cache = THINKING_SIGNATURE_CACHE.write();
+    evict_if_needed(&mut cache);
     cache.insert(signature.to_string(), CacheEntry::new(family));
 }
 

@@ -202,7 +202,7 @@ async fn handle_request(
 
     let duration = start.elapsed();
 
-    match &response {
+    match response {
         Ok(resp) => {
             let status = resp.status().as_u16();
             // Don't warn for expected 501 on count_tokens - it's not implemented by design
@@ -234,10 +234,10 @@ async fn handle_request(
                     "Request completed"
                 );
             }
-            Ok(resp.clone())
+            Ok(resp)
         }
         Err(e) => {
-            let resp = error_to_response(e, &request_id);
+            let resp = error_to_response(&e, &request_id);
             warn!(
                 method = %method,
                 path = %path,
@@ -524,7 +524,7 @@ async fn execute_messages_request(
         get_account_credentials(state, model).await?;
 
     let cc_request = build_request(messages_request, &project_id);
-    let request_body = serde_json::to_vec(&cc_request)?;
+    let request_body = Bytes::from(serde_json::to_vec(&cc_request)?);
 
     // Thinking models must use streaming endpoint even for non-streaming requests
     // (the non-streaming generateContent endpoint returns 429 for thinking models)
@@ -533,7 +533,7 @@ async fn execute_messages_request(
     let result = if is_streaming {
         handle_streaming_messages(
             &state.cloudcode_client,
-            &request_body,
+            request_body.clone(),
             &access_token,
             model,
             &cc_request.request_id,
@@ -543,7 +543,7 @@ async fn execute_messages_request(
         // Use streaming endpoint but return non-streaming response
         handle_thinking_non_streaming_messages(
             &state.cloudcode_client,
-            &request_body,
+            request_body.clone(),
             &access_token,
             model,
             &cc_request.request_id,
@@ -552,7 +552,7 @@ async fn execute_messages_request(
     } else {
         handle_non_streaming_messages(
             &state.cloudcode_client,
-            &request_body,
+            request_body.clone(),
             &access_token,
             model,
             &cc_request.request_id,
@@ -687,14 +687,14 @@ async fn execute_openai_request(
         get_account_credentials(state, model).await?;
 
     let cc_request = build_request(messages_request, &project_id);
-    let request_body = serde_json::to_vec(&cc_request)?;
+    let request_body = Bytes::from(serde_json::to_vec(&cc_request)?);
 
     let is_thinking = is_thinking_model(model);
 
     let result = if is_streaming {
         handle_openai_streaming(
             &state.cloudcode_client,
-            &request_body,
+            request_body.clone(),
             &access_token,
             model,
             &cc_request.request_id,
@@ -703,7 +703,7 @@ async fn execute_openai_request(
     } else if is_thinking {
         handle_openai_thinking_non_streaming(
             &state.cloudcode_client,
-            &request_body,
+            request_body.clone(),
             &access_token,
             model,
             &cc_request.request_id,
@@ -712,7 +712,7 @@ async fn execute_openai_request(
     } else {
         handle_openai_non_streaming(
             &state.cloudcode_client,
-            &request_body,
+            request_body.clone(),
             &access_token,
             model,
             &cc_request.request_id,
@@ -735,7 +735,7 @@ async fn execute_openai_request(
 
 async fn handle_openai_non_streaming(
     client: &CloudCodeClient,
-    body: &[u8],
+    body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
@@ -754,12 +754,12 @@ async fn handle_openai_non_streaming(
 
 async fn handle_openai_thinking_non_streaming(
     client: &CloudCodeClient,
-    body: &[u8],
+    body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
 ) -> Result<Response<Full<Bytes>>, Error> {
-    let (events, _body_str) = collect_sse_events(client, body, access_token, model).await?;
+    let (events, _body_bytes) = collect_sse_events(client, body, access_token, model).await?;
 
     check_stream_errors(
         &events,
@@ -780,7 +780,7 @@ async fn handle_openai_thinking_non_streaming(
 
 async fn handle_openai_streaming(
     client: &CloudCodeClient,
-    body: &[u8],
+    body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
@@ -788,7 +788,7 @@ async fn handle_openai_streaming(
     use crate::format::openai::{ChatCompletionChunk, ChatUsage, ChunkChoice, ChunkDelta};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let (all_events, _body_str) = collect_sse_events(client, body, access_token, model).await?;
+    let (all_events, _body_bytes) = collect_sse_events(client, body, access_token, model).await?;
     let mut output = String::new();
 
     let created = SystemTime::now()
@@ -1030,7 +1030,7 @@ async fn handle_responses(
         get_account_credentials(&state, model).await?;
 
     let cc_request = build_request(&messages_request, &project_id);
-    let request_body = serde_json::to_vec(&cc_request)?;
+    let request_body = Bytes::from(serde_json::to_vec(&cc_request)?);
 
     // Thinking models must use streaming endpoint even for non-streaming requests
     let is_thinking = is_thinking_model(model);
@@ -1038,7 +1038,7 @@ async fn handle_responses(
     let result = if is_streaming {
         handle_responses_streaming(
             &state.cloudcode_client,
-            &request_body,
+            request_body.clone(),
             &access_token,
             model,
             request_id,
@@ -1048,7 +1048,7 @@ async fn handle_responses(
         // Use streaming endpoint but return non-streaming response
         handle_responses_thinking_non_streaming(
             &state.cloudcode_client,
-            &request_body,
+            request_body.clone(),
             &access_token,
             model,
             request_id,
@@ -1057,7 +1057,7 @@ async fn handle_responses(
     } else {
         handle_responses_non_streaming(
             &state.cloudcode_client,
-            &request_body,
+            request_body.clone(),
             &access_token,
             model,
             request_id,
@@ -1080,7 +1080,7 @@ async fn handle_responses(
 
 async fn handle_responses_non_streaming(
     client: &CloudCodeClient,
-    body: &[u8],
+    body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
@@ -1100,12 +1100,12 @@ async fn handle_responses_non_streaming(
 // Thinking models must use streaming endpoint but return non-streaming response
 async fn handle_responses_thinking_non_streaming(
     client: &CloudCodeClient,
-    body: &[u8],
+    body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
 ) -> Result<Response<Full<Bytes>>, Error> {
-    let (all_events, _body_str) = collect_sse_events(client, body, access_token, model).await?;
+    let (all_events, _body_bytes) = collect_sse_events(client, body, access_token, model).await?;
 
     check_stream_errors(
         &all_events,
@@ -1128,7 +1128,7 @@ async fn handle_responses_thinking_non_streaming(
 
 async fn handle_responses_streaming(
     client: &CloudCodeClient,
-    body: &[u8],
+    body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
@@ -1139,7 +1139,7 @@ async fn handle_responses_streaming(
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let (all_events, _body_str) = collect_sse_events(client, body, access_token, model).await?;
+    let (all_events, _body_bytes) = collect_sse_events(client, body, access_token, model).await?;
     let mut output = String::new();
 
     let created_at = SystemTime::now()
@@ -1231,7 +1231,7 @@ async fn handle_responses_streaming(
                     emit_event(
                         &mut output,
                         &ResponseStreamEvent::ResponseCreated {
-                            response: make_response("in_progress", vec![], None),
+                            response: Box::new(make_response("in_progress", vec![], None)),
                         },
                     );
                     sent_initial = true;
@@ -1342,13 +1342,8 @@ async fn handle_responses_streaming(
                         tool_name = %current_tool_name,
                         "Tool call finalized"
                     );
-                    tool_calls.push((
-                        current_tool_id.clone(),
-                        current_tool_name.clone(),
-                        current_tool_json.clone(),
-                    ));
 
-                    // Emit function call done
+                    // Emit function call done event first (borrows current values)
                     let fc_item = ResponseOutputItem::FunctionCall {
                         id: format!("fc_{}", &current_tool_id),
                         call_id: current_tool_id.clone(),
@@ -1364,9 +1359,12 @@ async fn handle_responses_streaming(
                         },
                     );
 
-                    current_tool_id.clear();
-                    current_tool_name.clear();
-                    current_tool_json.clear();
+                    // Move values into tool_calls (no clone needed, take leaves empty strings)
+                    tool_calls.push((
+                        std::mem::take(&mut current_tool_id),
+                        std::mem::take(&mut current_tool_name),
+                        std::mem::take(&mut current_tool_json),
+                    ));
                 }
             }
             StreamEvent::MessageDelta { usage, .. } => {
@@ -1391,7 +1389,8 @@ async fn handle_responses_streaming(
             },
         );
 
-        // Content part done
+        // Content part done — clone text_content for the streaming event,
+        // the original will be moved into final_output later
         let part = ResponseOutputContent::OutputText {
             text: text_content.clone(),
             annotations: vec![],
@@ -1405,7 +1404,7 @@ async fn handle_responses_streaming(
             },
         );
 
-        // Output item done
+        // Output item done — move part and msg_item (no clones needed, not used after)
         let msg_item = ResponseOutputItem::Message {
             id: format!("msg_{}", &request_id[..8.min(request_id.len())]),
             role: "assistant",
@@ -1416,7 +1415,7 @@ async fn handle_responses_streaming(
             &mut output,
             &ResponseStreamEvent::OutputItemDone {
                 output_index,
-                item: msg_item.clone(),
+                item: msg_item,
             },
         );
     }
@@ -1453,12 +1452,12 @@ async fn handle_responses_streaming(
     let mut final_output = vec![];
 
     // Add tool calls first
-    for (id, name, arguments) in &tool_calls {
+    for (id, name, arguments) in tool_calls {
         final_output.push(ResponseOutputItem::FunctionCall {
-            id: format!("fc_{}", id),
-            call_id: id.clone(),
-            name: name.clone(),
-            arguments: arguments.clone(),
+            id: format!("fc_{}", &id),
+            call_id: id,
+            name,
+            arguments,
             status: "completed",
         });
     }
@@ -1489,7 +1488,7 @@ async fn handle_responses_streaming(
     emit_event(
         &mut output,
         &ResponseStreamEvent::ResponseCompleted {
-            response: make_response("completed", final_output, usage),
+            response: Box::new(make_response("completed", final_output, usage)),
         },
     );
 
@@ -1631,7 +1630,7 @@ async fn read_body_limited(body: hyper::body::Incoming, max_size: usize) -> Resu
 
 async fn handle_non_streaming_messages(
     client: &CloudCodeClient,
-    body: &[u8],
+    body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
@@ -1668,19 +1667,20 @@ async fn handle_non_streaming_messages(
 // Thinking models must use streaming endpoint (doesn't rate-limit) but client may want non-streaming
 async fn handle_thinking_non_streaming_messages(
     client: &CloudCodeClient,
-    body: &[u8],
+    body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
 ) -> Result<Response<Full<Bytes>>, Error> {
-    let (events, body_str) = collect_sse_events(client, body, access_token, model).await?;
+    let (events, body_bytes) = collect_sse_events(client, body, access_token, model).await?;
 
     // Log raw response for debugging empty/error responses
-    if body_str.len() < 2000 {
+    if body_bytes.len() < 2000 {
+        let body_str = String::from_utf8_lossy(&body_bytes);
         debug!(
             model = %model,
             request_id = %request_id,
-            body_len = body_str.len(),
+            body_len = body_bytes.len(),
             body = %body_str,
             "Raw SSE response from Google (thinking non-streaming)"
         );
@@ -1688,7 +1688,7 @@ async fn handle_thinking_non_streaming_messages(
         debug!(
             model = %model,
             request_id = %request_id,
-            body_len = body_str.len(),
+            body_len = body_bytes.len(),
             "Raw SSE response from Google (thinking non-streaming, truncated)"
         );
     }
@@ -1703,11 +1703,12 @@ async fn handle_thinking_non_streaming_messages(
         )
     });
 
-    if !has_content && !body_str.is_empty() {
+    if !has_content && !body_bytes.is_empty() {
+        let body_str = String::from_utf8_lossy(&body_bytes);
         warn!(
             model = %model,
             request_id = %request_id,
-            body_len = body_str.len(),
+            body_len = body_bytes.len(),
             "Empty response from Google API (thinking non-streaming) - model may be unavailable. Raw body: {}",
             body_str.chars().take(500).collect::<String>()
         );
@@ -1733,20 +1734,21 @@ async fn handle_thinking_non_streaming_messages(
 
 async fn handle_streaming_messages(
     client: &CloudCodeClient,
-    body: &[u8],
+    body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
 ) -> Result<Response<Full<Bytes>>, Error> {
-    let (events, body_str) = collect_sse_events(client, body, access_token, model).await?;
+    let (events, body_bytes) = collect_sse_events(client, body, access_token, model).await?;
     let mut output = String::new();
 
     // Log raw response for debugging empty/error responses
-    if body_str.len() < 2000 {
+    if body_bytes.len() < 2000 {
+        let body_str = String::from_utf8_lossy(&body_bytes);
         debug!(
             model = %model,
             request_id = %request_id,
-            body_len = body_str.len(),
+            body_len = body_bytes.len(),
             body = %body_str,
             "Raw SSE response from Google"
         );
@@ -1754,7 +1756,7 @@ async fn handle_streaming_messages(
         debug!(
             model = %model,
             request_id = %request_id,
-            body_len = body_str.len(),
+            body_len = body_bytes.len(),
             "Raw SSE response from Google (truncated, too large to log)"
         );
     }
@@ -1774,11 +1776,12 @@ async fn handle_streaming_messages(
         )
     });
 
-    if !has_content && !body_str.is_empty() {
+    if !has_content && !body_bytes.is_empty() {
+        let body_str = String::from_utf8_lossy(&body_bytes);
         warn!(
             model = %model,
             request_id = %request_id,
-            body_len = body_str.len(),
+            body_len = body_bytes.len(),
             "Empty response from Google API - model may be unavailable. Raw body: {}",
             body_str.chars().take(500).collect::<String>()
         );
@@ -1916,15 +1919,44 @@ async fn handle_logs_stream() -> Result<Response<Full<Bytes>>, Error> {
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let log_path = config_dir.join("agcp.log");
 
-    // Read the last 100 lines from the log file
+    // Read the last 100 lines from the log file efficiently (seek from end)
     let lines = match std::fs::File::open(&log_path) {
-        Ok(file) => {
-            let reader = std::io::BufReader::new(file);
-            let all_lines: Vec<String> = std::io::BufRead::lines(reader)
-                .map_while(Result::ok)
-                .collect();
-            let start = all_lines.len().saturating_sub(100);
-            all_lines[start..].to_vec()
+        Ok(mut file) => {
+            use std::io::{Read, Seek, SeekFrom};
+            let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
+            if file_len == 0 {
+                vec!["No log entries".to_string()]
+            } else {
+                const TAIL_COUNT: usize = 100;
+                const CHUNK_SIZE: u64 = 64 * 1024;
+                let mut collected: Vec<String> = Vec::new();
+                let mut remaining = file_len;
+
+                while remaining > 0 && collected.len() < TAIL_COUNT + 1 {
+                    let chunk = remaining.min(CHUNK_SIZE);
+                    let offset = remaining - chunk;
+                    let _ = file.seek(SeekFrom::Start(offset));
+                    let mut buf = vec![0u8; chunk as usize];
+                    if file.read_exact(&mut buf).is_err() {
+                        break;
+                    }
+                    let chunk_str = String::from_utf8_lossy(&buf);
+                    let mut chunk_lines: Vec<String> =
+                        chunk_str.lines().map(String::from).collect();
+                    if offset > 0 && !chunk_lines.is_empty() {
+                        let partial = chunk_lines.remove(0);
+                        if let Some(last) = collected.last_mut() {
+                            *last = format!("{}{}", partial, last);
+                        }
+                    }
+                    chunk_lines.append(&mut collected);
+                    collected = chunk_lines;
+                    remaining = offset;
+                }
+
+                let start = collected.len().saturating_sub(TAIL_COUNT);
+                collected[start..].to_vec()
+            }
         }
         Err(_) => vec!["No log file available".to_string()],
     };
@@ -1985,12 +2017,15 @@ fn test_server_state() -> Arc<ServerState> {
 }
 
 /// Send a streaming request and collect all SSE events by parsing the full response body.
+///
+/// Returns `(events, body_bytes)` where `body_bytes` are the raw response bytes.
+/// Callers that need the body as a string for logging can convert lazily.
 async fn collect_sse_events(
     client: &CloudCodeClient,
-    body: &[u8],
+    body: Bytes,
     access_token: &str,
     model: &str,
-) -> Result<(Vec<StreamEvent>, String), Error> {
+) -> Result<(Vec<StreamEvent>, Bytes), Error> {
     let response = client
         .send_streaming_request(body, access_token, model)
         .await?;
@@ -2004,7 +2039,8 @@ async fn collect_sse_events(
         .map_err(|e| Error::Http(e.to_string()))?
         .to_bytes();
 
-    let body_str = String::from_utf8_lossy(&body_bytes).into_owned();
+    // Parse directly from the byte slice (lossy), avoiding an owned String allocation
+    let body_str = String::from_utf8_lossy(&body_bytes);
 
     let mut events = Vec::new();
     for event in parser.feed(&body_str) {
@@ -2014,7 +2050,7 @@ async fn collect_sse_events(
         events.push(event);
     }
 
-    Ok((events, body_str))
+    Ok((events, body_bytes))
 }
 
 /// Check SSE events for API errors and return an error if one is found.
@@ -2066,7 +2102,11 @@ fn log_if_enabled<T: serde::Serialize>(request_id: &str, label: &str, value: &T)
 }
 
 /// Build a JSON OK response with request tracking headers.
-fn json_ok_response(body: Vec<u8>, request_id: &str, cache: Option<&str>) -> Response<Full<Bytes>> {
+fn json_ok_response(
+    body: impl Into<Bytes>,
+    request_id: &str,
+    cache: Option<&str>,
+) -> Response<Full<Bytes>> {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
@@ -2076,7 +2116,7 @@ fn json_ok_response(body: Vec<u8>, request_id: &str, cache: Option<&str>) -> Res
         builder = builder.header("X-Cache", cache_status);
     }
 
-    builder.body(Full::new(Bytes::from(body))).unwrap()
+    builder.body(Full::new(body.into())).unwrap()
 }
 
 /// Build an SSE streaming response with standard headers.

@@ -254,7 +254,7 @@ mod tests {
     fn test_build_response_from_events_text() {
         let events = vec![
             StreamEvent::MessageStart {
-                message: crate::format::MessageStart {
+                message: Box::new(crate::format::MessageStart {
                     id: "msg_123".to_string(),
                     message_type: "message".to_string(),
                     role: Role::Assistant,
@@ -268,7 +268,7 @@ mod tests {
                         cache_read_input_tokens: None,
                         cache_creation_input_tokens: None,
                     },
-                },
+                }),
             },
             StreamEvent::ContentBlockStart {
                 index: 0,
@@ -388,23 +388,21 @@ pub fn build_response_from_events(
                 // Finalize the current block
                 if in_text_block && !current_text.is_empty() {
                     content.push(ContentBlock::Text {
-                        text: current_text.clone(),
+                        text: std::mem::take(&mut current_text),
                         cache_control: None,
                     });
-                    current_text.clear();
                     in_text_block = false;
                 }
                 if in_thinking_block && !current_thinking.is_empty() {
+                    let signature = if current_signature.is_empty() {
+                        None
+                    } else {
+                        Some(std::mem::take(&mut current_signature))
+                    };
                     content.push(ContentBlock::Thinking {
-                        thinking: current_thinking.clone(),
-                        signature: if current_signature.is_empty() {
-                            None
-                        } else {
-                            Some(current_signature.clone())
-                        },
+                        thinking: std::mem::take(&mut current_thinking),
+                        signature,
                     });
-                    current_thinking.clear();
-                    current_signature.clear();
                     in_thinking_block = false;
                 }
             }

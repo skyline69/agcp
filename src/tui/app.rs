@@ -1097,7 +1097,7 @@ impl App {
 
     /// Save mapping rules to config
     fn mapping_save(&mut self) {
-        let mut config = crate::config::get_config();
+        let mut config = (*crate::config::get_config()).clone();
         config.mappings.preset = self.mapping_preset.name().to_string();
         config.mappings.background_task_model = self.mapping_background_model.clone();
         config.mappings.rules = self.mapping_rules.clone();
@@ -1688,7 +1688,7 @@ impl App {
 
     /// Apply config fields back to a Config struct
     fn apply_fields_to_config(&self) -> crate::config::Config {
-        let mut config = crate::config::get_config();
+        let mut config = (*crate::config::get_config()).clone();
 
         for field in &self.config_fields {
             match (field.section, field.key) {

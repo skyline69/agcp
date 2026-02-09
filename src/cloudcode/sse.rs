@@ -30,7 +30,7 @@ enum BlockType {
 impl SseParser {
     pub fn new(model: &str) -> Self {
         Self {
-            buffer: String::new(),
+            buffer: String::with_capacity(4096),
             model: model.to_string(),
             message_id: format!("msg_{:032x}", generate_random()),
             has_emitted_start: false,
@@ -62,7 +62,7 @@ impl SseParser {
             match boundary {
                 Some((pos, skip)) => {
                     let line = self.buffer[..pos].to_string();
-                    self.buffer = self.buffer[pos + skip..].to_string();
+                    self.buffer.drain(..pos + skip);
 
                     if let Some(event) = self.parse_line(&line) {
                         events.extend(event);
@@ -225,7 +225,7 @@ impl SseParser {
             // Calculate input_tokens = promptTokenCount - cachedContentTokenCount
             let adjusted_input = self.input_tokens.saturating_sub(self.cache_read_tokens);
             events.push(StreamEvent::MessageStart {
-                message: MessageStart {
+                message: Box::new(MessageStart {
                     id: self.message_id.clone(),
                     message_type: "message".to_string(),
                     role: Role::Assistant,
@@ -243,7 +243,7 @@ impl SseParser {
                         },
                         cache_creation_input_tokens: Some(0),
                     },
-                },
+                }),
             });
         }
 

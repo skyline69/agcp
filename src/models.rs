@@ -46,13 +46,28 @@ impl Model {
     }
 }
 
+/// Case-insensitive ASCII substring check without allocation.
+fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+/// Case-insensitive ASCII prefix check without allocation.
+fn starts_with_ignore_case(s: &str, prefix: &str) -> bool {
+    s.len() >= prefix.len() && s.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+}
+
 pub fn get_model_family(model_name: &str) -> &'static str {
-    let lower = model_name.to_lowercase();
-    if lower.contains("claude") {
+    if contains_ignore_case(model_name, "claude") {
         "claude"
-    } else if lower.contains("gemini") {
+    } else if contains_ignore_case(model_name, "gemini") {
         "gemini"
-    } else if lower.contains("gpt-oss") {
+    } else if contains_ignore_case(model_name, "gpt-oss") {
         "gpt-oss"
     } else {
         "unknown"
@@ -62,23 +77,30 @@ pub fn get_model_family(model_name: &str) -> &'static str {
 /// Resolve model aliases to their full model names.
 /// Supports shorthand like "opus", "sonnet", "flash", etc.
 pub fn resolve_model_alias(model: &str) -> &str {
-    let lower = model.to_lowercase();
-
-    // Handle dated model names (e.g., claude-opus-4-6-20251201 -> claude-opus-4-6-thinking)
-    if lower.starts_with("claude-opus-4-6") || lower.starts_with("claude-opus-4.6") {
+    // Handle dated model names with case-insensitive prefix checks (no allocation)
+    if starts_with_ignore_case(model, "claude-opus-4-6")
+        || starts_with_ignore_case(model, "claude-opus-4.6")
+    {
         return "claude-opus-4-6-thinking";
     }
-    if lower.starts_with("claude-opus-4-5") || lower.starts_with("claude-opus-4.5") {
+    if starts_with_ignore_case(model, "claude-opus-4-5")
+        || starts_with_ignore_case(model, "claude-opus-4.5")
+    {
         return "claude-opus-4-5-thinking";
     }
-    if lower.starts_with("claude-sonnet-4-5-thinking")
-        || lower.starts_with("claude-sonnet-4.5-thinking")
+    if starts_with_ignore_case(model, "claude-sonnet-4-5-thinking")
+        || starts_with_ignore_case(model, "claude-sonnet-4.5-thinking")
     {
         return "claude-sonnet-4-5-thinking";
     }
-    if lower.starts_with("claude-sonnet-4-5") || lower.starts_with("claude-sonnet-4.5") {
+    if starts_with_ignore_case(model, "claude-sonnet-4-5")
+        || starts_with_ignore_case(model, "claude-sonnet-4.5")
+    {
         return "claude-sonnet-4-5";
     }
+
+    // For alias matching, allocate only if we didn't match above
+    let lower = model.to_ascii_lowercase();
 
     match lower.as_str() {
         // Claude aliases - default to 4.6, fallback to 4.5 if unavailable
@@ -131,17 +153,16 @@ pub fn get_fallback_model(model: &str) -> Option<&'static str> {
 /// Claude models need "thinking" in name.
 /// Gemini 3+ models are all thinking models (e.g., gemini-3-flash).
 pub fn is_thinking_model(model_name: &str) -> bool {
-    let lower = model_name.to_lowercase();
-
-    if lower.contains("claude") && lower.contains("thinking") {
+    if contains_ignore_case(model_name, "claude") && contains_ignore_case(model_name, "thinking") {
         return true;
     }
 
-    if lower.contains("gemini") {
-        if lower.contains("thinking") {
+    if contains_ignore_case(model_name, "gemini") {
+        if contains_ignore_case(model_name, "thinking") {
             return true;
         }
         // gemini-3+ are all thinking models
+        let lower = model_name.to_ascii_lowercase();
         if let Some(version_str) = lower.strip_prefix("gemini-")
             && let Some(version_num) = version_str.chars().next().and_then(|c| c.to_digit(10))
             && version_num >= 3
@@ -159,8 +180,8 @@ pub fn is_thinking_model(model_name: &str) -> bool {
 /// - `*` in middle: splits on `*` and checks prefix + suffix
 /// - No `*`: exact match (case-insensitive)
 pub fn glob_match(pattern: &str, input: &str) -> bool {
-    let pattern = pattern.to_lowercase();
-    let input = input.to_lowercase();
+    let pattern = pattern.to_ascii_lowercase();
+    let input = input.to_ascii_lowercase();
 
     if let Some(idx) = pattern.find('*') {
         let prefix = &pattern[..idx];
@@ -250,7 +271,7 @@ impl MappingPreset {
     }
 
     pub fn from_name(name: &str) -> MappingPreset {
-        match name.to_lowercase().as_str() {
+        match name.to_ascii_lowercase().as_str() {
             "balanced" => MappingPreset::Balanced,
             "performance" => MappingPreset::Performance,
             "cost" => MappingPreset::Cost,

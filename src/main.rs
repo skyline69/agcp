@@ -17,7 +17,7 @@ use std::env;
 use std::fs::File;
 #[cfg(unix)]
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -766,13 +766,43 @@ fn run_logs_command(args: &[String]) {
         return;
     }
 
-    // Print last N lines
-    let file = File::open(&log_path).expect("Failed to open log file");
-    let reader = BufReader::new(&file);
-    let all_lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
-    let start = all_lines.len().saturating_sub(lines);
+    // Print last N lines (read from end of file to avoid loading entire file)
+    let mut file = File::open(&log_path).expect("Failed to open log file");
+    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-    for line in &all_lines[start..] {
+    let tail_lines = if file_len == 0 {
+        Vec::new()
+    } else {
+        const CHUNK_SIZE: u64 = 64 * 1024;
+        let mut collected: Vec<String> = Vec::new();
+        let mut remaining = file_len;
+
+        while remaining > 0 && collected.len() < lines + 1 {
+            let chunk = remaining.min(CHUNK_SIZE);
+            let offset = remaining - chunk;
+            file.seek(SeekFrom::Start(offset)).expect("Failed to seek");
+            let mut buf = vec![0u8; chunk as usize];
+            if file.read_exact(&mut buf).is_err() {
+                break;
+            }
+            let chunk_str = String::from_utf8_lossy(&buf);
+            let mut chunk_lines: Vec<String> = chunk_str.lines().map(String::from).collect();
+            if offset > 0 && !chunk_lines.is_empty() {
+                let partial = chunk_lines.remove(0);
+                if let Some(last) = collected.last_mut() {
+                    *last = format!("{}{}", partial, last);
+                }
+            }
+            chunk_lines.append(&mut collected);
+            collected = chunk_lines;
+            remaining = offset;
+        }
+
+        let start = collected.len().saturating_sub(lines);
+        collected[start..].to_vec()
+    };
+
+    for line in &tail_lines {
         println!("{}", line);
     }
 

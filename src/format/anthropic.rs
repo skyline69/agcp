@@ -156,7 +156,7 @@ pub struct Usage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     MessageStart {
-        message: MessageStart,
+        message: Box<MessageStart>,
     },
     ContentBlockStart {
         index: u32,

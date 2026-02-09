@@ -1,5 +1,6 @@
 //! Response cache with LRU eviction and TTL expiration.
 
+use hyper::body::Bytes;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
@@ -7,7 +8,7 @@ use std::time::{Duration, Instant};
 
 /// A single cache entry with TTL tracking.
 struct CacheEntry {
-    response: Vec<u8>,
+    response: Bytes,
     created_at: Instant,
     ttl: Duration,
 }
@@ -50,8 +51,8 @@ impl ResponseCache {
     /// * `max_entries` - Maximum number of entries before LRU eviction
     pub fn new(enabled: bool, ttl_seconds: u64, max_entries: usize) -> Self {
         Self {
-            entries: HashMap::new(),
-            order: VecDeque::new(),
+            entries: HashMap::with_capacity(max_entries),
+            order: VecDeque::with_capacity(max_entries),
             max_entries,
             default_ttl: Duration::from_secs(ttl_seconds),
             enabled,
@@ -63,7 +64,7 @@ impl ResponseCache {
     /// Generate a cache key from request parameters using SHA-256.
     ///
     /// The key is a deterministic hash of the model, messages, system prompt,
-    /// tools, and temperature.
+    /// tools, and temperature. Returns a hex-encoded string (64 chars).
     pub fn make_key(
         model: &str,
         messages_json: &str,
@@ -88,14 +89,21 @@ impl ResponseCache {
             hasher.update(temp.to_le_bytes());
         }
         let result = hasher.finalize();
-        result.iter().map(|b| format!("{:02x}", b)).collect()
+        // Use a pre-allocated string and write hex directly (avoids per-byte format!)
+        let mut hex = String::with_capacity(64);
+        for b in result.iter() {
+            use std::fmt::Write;
+            let _ = write!(hex, "{:02x}", b);
+        }
+        hex
     }
 
     /// Get a cached response by key.
     ///
     /// Returns `Some(response)` if found and not expired, `None` otherwise.
     /// Updates LRU order and tracks hits/misses.
-    pub fn get(&mut self, key: &str) -> Option<Vec<u8>> {
+    /// The returned `Bytes` is cheaply cloned (reference-counted).
+    pub fn get(&mut self, key: &str) -> Option<Bytes> {
         if !self.enabled {
             self.misses += 1;
             return None;
@@ -130,6 +138,8 @@ impl ResponseCache {
         if !self.enabled {
             return;
         }
+
+        let response = Bytes::from(response);
 
         // If key already exists, update it and move to back of LRU
         if self.entries.contains_key(&key) {
@@ -209,7 +219,7 @@ mod tests {
 
         // Put and get
         cache.put(key.clone(), response.clone());
-        assert_eq!(cache.get(&key), Some(response));
+        assert_eq!(cache.get(&key).as_deref(), Some(response.as_slice()));
 
         // Still there on second get
         assert!(cache.get(&key).is_some());

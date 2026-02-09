@@ -6,8 +6,21 @@ pub use accounts::Account;
 pub use oauth::{CALLBACK_PORT, exchange_code, get_authorization_url, start_callback_server};
 pub use token::get_user_email;
 
+use http_body_util::{BodyExt, Empty, Full};
+use hyper::Request;
+use hyper::body::Bytes;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
+
 pub struct HttpClient {
-    connector: hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+    full_client: Client<
+        hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        Full<Bytes>,
+    >,
+    empty_client: Client<
+        hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+        Empty<Bytes>,
+    >,
 }
 
 impl HttpClient {
@@ -18,7 +31,13 @@ impl HttpClient {
             .enable_http1()
             .build();
 
-        Self { connector }
+        let full_client = Client::builder(TokioExecutor::new()).build(connector.clone());
+        let empty_client = Client::builder(TokioExecutor::new()).build(connector);
+
+        Self {
+            full_client,
+            empty_client,
+        }
     }
 
     pub async fn post(
@@ -27,15 +46,6 @@ impl HttpClient {
         content_type: &str,
         body: &[u8],
     ) -> Result<Vec<u8>, String> {
-        use http_body_util::{BodyExt, Full};
-        use hyper::Request;
-        use hyper::body::Bytes;
-        use hyper_util::client::legacy::Client;
-        use hyper_util::rt::TokioExecutor;
-
-        let client: Client<_, Full<Bytes>> =
-            Client::builder(TokioExecutor::new()).build(self.connector.clone());
-
         let req = Request::builder()
             .method("POST")
             .uri(url)
@@ -43,7 +53,11 @@ impl HttpClient {
             .body(Full::new(Bytes::from(body.to_vec())))
             .map_err(|e| e.to_string())?;
 
-        let response = client.request(req).await.map_err(|e| e.to_string())?;
+        let response = self
+            .full_client
+            .request(req)
+            .await
+            .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
             return Err(format!("HTTP {}", response.status()));
@@ -58,15 +72,6 @@ impl HttpClient {
     }
 
     pub async fn get_with_auth(&self, url: &str, token: &str) -> Result<Vec<u8>, String> {
-        use http_body_util::{BodyExt, Empty};
-        use hyper::Request;
-        use hyper::body::Bytes;
-        use hyper_util::client::legacy::Client;
-        use hyper_util::rt::TokioExecutor;
-
-        let client: Client<_, Empty<Bytes>> =
-            Client::builder(TokioExecutor::new()).build(self.connector.clone());
-
         let req = Request::builder()
             .method("GET")
             .uri(url)
@@ -74,7 +79,11 @@ impl HttpClient {
             .body(Empty::new())
             .map_err(|e| e.to_string())?;
 
-        let response = client.request(req).await.map_err(|e| e.to_string())?;
+        let response = self
+            .empty_client
+            .request(req)
+            .await
+            .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
             return Err(format!("HTTP {}", response.status()));
@@ -95,15 +104,6 @@ impl HttpClient {
         content_type: &str,
         body: &[u8],
     ) -> Result<Vec<u8>, String> {
-        use http_body_util::{BodyExt, Full};
-        use hyper::Request;
-        use hyper::body::Bytes;
-        use hyper_util::client::legacy::Client;
-        use hyper_util::rt::TokioExecutor;
-
-        let client: Client<_, Full<Bytes>> =
-            Client::builder(TokioExecutor::new()).build(self.connector.clone());
-
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
         let user_agent = format!("antigravity/1.15.8 {}/{}", os, arch);
@@ -124,7 +124,11 @@ impl HttpClient {
             .body(Full::new(Bytes::from(body.to_vec())))
             .map_err(|e| e.to_string())?;
 
-        let response = client.request(req).await.map_err(|e| e.to_string())?;
+        let response = self
+            .full_client
+            .request(req)
+            .await
+            .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
             return Err(format!("HTTP {}", response.status()));
@@ -145,15 +149,6 @@ impl HttpClient {
         body: &[u8],
         headers: &[(&str, &str)],
     ) -> Result<Vec<u8>, String> {
-        use http_body_util::{BodyExt, Full};
-        use hyper::Request;
-        use hyper::body::Bytes;
-        use hyper_util::client::legacy::Client;
-        use hyper_util::rt::TokioExecutor;
-
-        let client: Client<_, Full<Bytes>> =
-            Client::builder(TokioExecutor::new()).build(self.connector.clone());
-
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
         let user_agent = format!("antigravity/1.15.8 {}/{}", os, arch);
@@ -179,7 +174,11 @@ impl HttpClient {
             .body(Full::new(Bytes::from(body.to_vec())))
             .map_err(|e| e.to_string())?;
 
-        let response = client.request(req).await.map_err(|e| e.to_string())?;
+        let response = self
+            .full_client
+            .request(req)
+            .await
+            .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
             return Err(format!("HTTP {}", response.status()));
@@ -195,15 +194,6 @@ impl HttpClient {
 
     /// Simple GET request with custom headers
     pub async fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<Vec<u8>, String> {
-        use http_body_util::{BodyExt, Empty};
-        use hyper::Request;
-        use hyper::body::Bytes;
-        use hyper_util::client::legacy::Client;
-        use hyper_util::rt::TokioExecutor;
-
-        let client: Client<_, Empty<Bytes>> =
-            Client::builder(TokioExecutor::new()).build(self.connector.clone());
-
         let mut req = Request::builder().method("GET").uri(url);
 
         for (name, value) in headers {
@@ -212,7 +202,11 @@ impl HttpClient {
 
         let req = req.body(Empty::new()).map_err(|e| e.to_string())?;
 
-        let response = client.request(req).await.map_err(|e| e.to_string())?;
+        let response = self
+            .empty_client
+            .request(req)
+            .await
+            .map_err(|e| e.to_string())?;
 
         if !response.status().is_success() {
             return Err(format!("HTTP {}", response.status()));

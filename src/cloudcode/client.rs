@@ -3,6 +3,7 @@ use hyper::Request;
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore, SemaphorePermit};
@@ -89,7 +90,7 @@ impl CloudCodeClient {
 
     pub async fn send_request(
         &self,
-        body: &[u8],
+        body: Bytes,
         access_token: &str,
         model: &str,
     ) -> Result<GenerateContentResponse> {
@@ -134,7 +135,11 @@ impl CloudCodeClient {
                     }));
                 }
 
-                match tokio::time::timeout(self.api_timeout, self.post(&url, &headers, body)).await
+                match tokio::time::timeout(
+                    self.api_timeout,
+                    self.post(&url, &headers, body.clone()),
+                )
+                .await
                 {
                     Ok(Ok(response_bytes)) => {
                         let response: GenerateContentResponse =
@@ -305,7 +310,7 @@ impl CloudCodeClient {
 
     pub async fn send_streaming_request(
         &self,
-        body: &[u8],
+        body: Bytes,
         access_token: &str,
         model: &str,
     ) -> Result<hyper::Response<hyper::body::Incoming>> {
@@ -350,7 +355,7 @@ impl CloudCodeClient {
                     }));
                 }
 
-                match self.post_raw(&url, &headers, body).await {
+                match self.post_raw(&url, &headers, body.clone()).await {
                     Ok(response) => {
                         if response.status().is_success() {
                             clear_rate_limit_state(model);
@@ -511,7 +516,12 @@ impl CloudCodeClient {
         Err(last_error.unwrap_or_else(|| Error::Http("All endpoints failed".to_string())))
     }
 
-    async fn post(&self, url: &str, headers: &[(String, String)], body: &[u8]) -> Result<Vec<u8>> {
+    async fn post(
+        &self,
+        url: &str,
+        headers: &[(Cow<'static, str>, Cow<'static, str>)],
+        body: Bytes,
+    ) -> Result<Bytes> {
         let response = self.post_raw(url, headers, body).await?;
 
         if !response.status().is_success() {
@@ -520,7 +530,7 @@ impl CloudCodeClient {
                 .into_body()
                 .collect()
                 .await
-                .map(|b| b.to_bytes().to_vec())
+                .map(|b| b.to_bytes())
                 .unwrap_or_default();
             let message = String::from_utf8_lossy(&body_bytes).to_string();
 
@@ -532,23 +542,23 @@ impl CloudCodeClient {
             .collect()
             .await
             .map_err(|e| Error::Http(e.to_string()))?;
-        Ok(body.to_bytes().to_vec())
+        Ok(body.to_bytes())
     }
 
     async fn post_raw(
         &self,
         url: &str,
-        headers: &[(String, String)],
-        body: &[u8],
+        headers: &[(Cow<'static, str>, Cow<'static, str>)],
+        body: Bytes,
     ) -> Result<hyper::Response<hyper::body::Incoming>> {
         let mut req = Request::builder().method("POST").uri(url);
 
         for (name, value) in headers {
-            req = req.header(name.as_str(), value.as_str());
+            req = req.header(name.as_ref(), value.as_ref());
         }
 
         let req = req
-            .body(Full::new(Bytes::from(body.to_vec())))
+            .body(Full::new(body))
             .map_err(|e| Error::Http(e.to_string()))?;
 
         self.client
