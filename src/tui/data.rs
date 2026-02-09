@@ -573,3 +573,90 @@ pub struct TokenStats {
     pub total_cache_read_tokens: u64,
 }
 
+/// Number of data points to keep in the token history (one per poll interval)
+const TOKEN_HISTORY_SIZE: usize = 120; // 120 * 5s = 10 minutes
+
+/// Rolling time-series of per-model total token counts.
+/// Each entry is a snapshot of cumulative totals at a point in time.
+/// The chart renders deltas between consecutive snapshots.
+#[derive(Debug, Clone)]
+pub struct TokenHistory {
+    /// Model names in consistent order (insertion order)
+    pub models: Vec<String>,
+    /// Per-model time-series: each Vec has TOKEN_HISTORY_SIZE entries
+    /// representing total tokens (input + output) at each snapshot
+    pub series: Vec<std::collections::VecDeque<u64>>,
+    /// Number of snapshots recorded so far
+    pub count: usize,
+}
+
+impl TokenHistory {
+    pub fn new() -> Self {
+        Self {
+            models: Vec::new(),
+            series: Vec::new(),
+            count: 0,
+        }
+    }
+
+    /// Record a new snapshot from the current TokenStats.
+    /// Stores cumulative totals; the chart can compute rates from deltas.
+    pub fn push(&mut self, stats: &TokenStats) {
+        // Ensure all models from stats exist in our tracking
+        for m in &stats.models {
+            if !self.models.contains(&m.model) {
+                self.models.push(m.model.clone());
+                let mut deque = std::collections::VecDeque::with_capacity(TOKEN_HISTORY_SIZE);
+                // Backfill with zeros for previous snapshots
+                for _ in 0..self.count {
+                    deque.push_back(0);
+                }
+                self.series.push(deque);
+            }
+        }
+
+        // Push current values for each tracked model
+        for (i, model_name) in self.models.iter().enumerate() {
+            let total = stats
+                .models
+                .iter()
+                .find(|m| &m.model == model_name)
+                .map(|m| m.input_tokens + m.output_tokens)
+                .unwrap_or(0);
+
+            let deque = &mut self.series[i];
+            if deque.len() >= TOKEN_HISTORY_SIZE {
+                deque.pop_front();
+            }
+            deque.push_back(total);
+        }
+
+        self.count += 1;
+    }
+
+    /// Get per-model rate data (tokens per interval) for the chart.
+    /// Returns Vec of (model_name, Vec<(x, y)>) where x is the data point index
+    /// and y is the tokens consumed in that interval.
+    pub fn get_rate_series(&self) -> Vec<(&str, Vec<(f64, f64)>)> {
+        let mut result = Vec::new();
+        for (i, model_name) in self.models.iter().enumerate() {
+            let deque = &self.series[i];
+            if deque.len() < 2 {
+                continue;
+            }
+
+            let mut points = Vec::with_capacity(deque.len() - 1);
+            for j in 1..deque.len() {
+                let delta = deque[j].saturating_sub(deque[j - 1]);
+                points.push((j as f64, delta as f64));
+            }
+
+            // Only include models that have non-zero activity
+            if points.iter().any(|(_, y)| *y > 0.0) {
+                result.push((model_name.as_str(), points));
+            }
+        }
+        result
+    }
+}
+

@@ -1,8 +1,23 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Bar, BarChart, BarGroup, Block, BorderType, Borders, Paragraph};
+use ratatui::symbols::Marker;
+use ratatui::widgets::{
+    Axis, Block, BorderType, Borders, Chart, Dataset, GraphType, LegendPosition, Paragraph,
+};
 
 use crate::tui::app::App;
 use crate::tui::theme;
+
+/// Distinct colors for different models in the chart
+const MODEL_COLORS: &[Color] = &[
+    Color::Rgb(0, 212, 170),   // Cyan/Teal (PRIMARY)
+    Color::Rgb(10, 132, 255),  // Blue (SECONDARY)
+    Color::Rgb(248, 81, 73),   // Red (ERROR)
+    Color::Rgb(210, 153, 34),  // Amber (WARNING)
+    Color::Rgb(63, 185, 80),   // Green (SUCCESS)
+    Color::Rgb(188, 140, 255), // Purple
+    Color::Rgb(255, 166, 87),  // Orange
+    Color::Rgb(255, 105, 180), // Pink
+];
 
 /// Render the usage tab content showing token consumption statistics
 pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -20,15 +35,15 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // Layout: top summary row + model bar chart
+    // Layout: top summary row + time-series chart
     let layout = Layout::vertical([
         Constraint::Length(5), // Summary panel
-        Constraint::Fill(1),   // Model token chart
+        Constraint::Fill(1),   // Token rate chart
     ])
     .split(area);
 
     render_summary(frame, layout[0], stats);
-    render_model_chart(frame, layout[1], stats);
+    render_token_chart(frame, layout[1], app);
 }
 
 /// Render when no token data is available
@@ -119,105 +134,146 @@ fn render_summary(frame: &mut Frame, area: Rect, stats: &crate::tui::data::Token
         Style::default().fg(theme::WARNING),
     ));
 
-    let line = Line::from(spans);
-    // Add some vertical padding
-    let text_area = Rect::new(inner.x, inner.y + 1, inner.width, 1);
-    frame.render_widget(Paragraph::new(line), text_area);
+    // Second line: per-model totals
+    let mut model_spans = vec![Span::raw("  ")];
+    for (i, m) in stats.models.iter().enumerate() {
+        let color = MODEL_COLORS[i % MODEL_COLORS.len()];
+        if i > 0 {
+            model_spans.push(Span::raw("  "));
+        }
+        model_spans.push(Span::styled(
+            shorten_model_name(&m.model),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+        model_spans.push(Span::styled(
+            format!(" {}", format_tokens(m.input_tokens + m.output_tokens)),
+            Style::default().fg(color),
+        ));
+    }
+
+    let lines = vec![Line::from(spans), Line::from(model_spans)];
+
+    let text_area = Rect::new(inner.x, inner.y, inner.width, inner.height.min(3));
+    frame.render_widget(Paragraph::new(lines), text_area);
 }
 
-/// Render model-level token usage as a grouped bar chart
-fn render_model_chart(frame: &mut Frame, area: Rect, stats: &crate::tui::data::TokenStats) {
-    if stats.models.is_empty() {
-        return;
-    }
+/// Render the time-series token rate chart with one line per model
+fn render_token_chart(frame: &mut Frame, area: Rect, app: &App) {
+    let rate_series = app.token_history.get_rate_series();
 
-    let block = Block::default()
-        .title(" Tokens by Model ")
-        .title_style(theme::primary())
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(theme::border())
-        .style(Style::default().bg(theme::SURFACE));
+    if rate_series.is_empty() {
+        // Not enough data points yet — show waiting message
+        let block = Block::default()
+            .title(" Token Rate (tokens/5s by model) ")
+            .title_style(theme::primary())
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(theme::border())
+            .style(Style::default().bg(theme::SURFACE));
 
-    let inner = block.inner(area);
-
-    // If there's not enough room for a bar chart, fall back to text
-    if inner.height < 4 || inner.width < 20 {
+        let inner = block.inner(area);
         frame.render_widget(block, area);
+
+        let msg =
+            Paragraph::new("Collecting data... chart will appear after a few poll intervals.")
+                .style(theme::dim());
+        frame.render_widget(msg, inner);
         return;
     }
 
-    // Build bar groups — one group per model with input/output bars
-    let groups: Vec<BarGroup> = stats
-        .models
+    // We need to own the data so Dataset can borrow it
+    let owned_series: Vec<(String, Vec<(f64, f64)>)> = rate_series
         .iter()
-        .map(|m| {
-            let label = shorten_model_name(&m.model);
-            BarGroup::default()
-                .label(Line::from(label).centered())
-                .bars(&[
-                    Bar::default()
-                        .value(m.input_tokens)
-                        .label(Line::from(format_tokens_short(m.input_tokens)))
-                        .style(Style::default().fg(theme::SECONDARY)),
-                    Bar::default()
-                        .value(m.output_tokens)
-                        .label(Line::from(format_tokens_short(m.output_tokens)))
-                        .style(Style::default().fg(theme::PRIMARY)),
-                ])
+        .map(|(name, points)| (name.to_string(), points.clone()))
+        .collect();
+
+    // Find the global max Y value across all series
+    let max_y = owned_series
+        .iter()
+        .flat_map(|(_, pts)| pts.iter().map(|(_, y)| *y))
+        .fold(0.0f64, f64::max);
+
+    // Find the max X value
+    let max_x = owned_series
+        .iter()
+        .flat_map(|(_, pts)| pts.iter().map(|(x, _)| *x))
+        .fold(0.0f64, f64::max);
+
+    // Build datasets — one per model, each with a distinct color
+    let datasets: Vec<Dataset> = owned_series
+        .iter()
+        .enumerate()
+        .map(|(i, (name, points))| {
+            let color = MODEL_COLORS[i % MODEL_COLORS.len()];
+            Dataset::default()
+                .name(shorten_model_name(name))
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(color))
+                .data(points)
         })
         .collect();
 
-    // Calculate bar width based on available space and number of models
-    let num_models = stats.models.len();
-    // Each group has 2 bars + 1 gap between bars + 2 gap between groups
-    // So width per group = bar_width * 2 + gap(1) + group_gap(2)
-    let available_width = inner.width as usize;
-    let bar_width = if num_models == 0 {
-        5
-    } else {
-        // Each group takes: bar_width * 2 + 1 (inter-bar gap) + 2 (group gap)
-        // Total = num_models * (2*bw + 3) - 2 (no trailing group gap)
-        // Solve for bw: available_width + 2 = num_models * (2*bw + 3)
-        let max_bw = ((available_width + 2) / num_models).saturating_sub(3) / 2;
-        max_bw.clamp(3, 12)
+    // X axis: data point indices (each represents ~5 seconds)
+    let x_bound = max_x.max(10.0);
+    let x_labels = {
+        let total_secs = x_bound * 5.0; // Each point is ~5 seconds
+        vec![
+            Span::styled(format!("-{:.0}s", total_secs), theme::dim()),
+            Span::styled(format!("-{:.0}s", total_secs / 2.0), theme::dim()),
+            Span::styled("now", theme::dim()),
+        ]
     };
 
-    let mut chart = BarChart::default()
-        .block(block)
-        .bar_width(bar_width as u16)
-        .bar_gap(1)
-        .group_gap(2)
-        .bar_style(Style::default().fg(theme::DIM))
-        .value_style(
-            Style::default()
-                .fg(theme::TEXT)
-                .add_modifier(Modifier::BOLD),
-        );
+    let x_axis = Axis::default()
+        .style(theme::dim())
+        .bounds([0.0, x_bound])
+        .labels(x_labels);
 
-    for group in groups {
-        chart = chart.data(group);
-    }
+    // Y axis: tokens per interval
+    let y_bound = if max_y <= 100.0 {
+        (max_y * 1.2).max(10.0)
+    } else {
+        max_y * 1.1
+    };
+
+    let y_labels = if max_y <= 10.0 {
+        vec![
+            Span::styled("0", theme::dim()),
+            Span::styled(format!("{}", y_bound.ceil() as u64), theme::dim()),
+        ]
+    } else {
+        let mid = (y_bound / 2.0).round() as u64;
+        let max_label = y_bound.ceil() as u64;
+        vec![
+            Span::styled("0", theme::dim()),
+            Span::styled(format_tokens_short(mid), theme::dim()),
+            Span::styled(format_tokens_short(max_label), theme::dim()),
+        ]
+    };
+
+    let y_axis = Axis::default()
+        .title(Span::styled("tokens/5s", theme::dim()))
+        .style(theme::dim())
+        .bounds([0.0, y_bound])
+        .labels(y_labels);
+
+    let chart = Chart::new(datasets)
+        .block(
+            Block::default()
+                .title(" Token Rate (tokens/5s by model) ")
+                .title_style(theme::primary())
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(theme::border())
+                .style(Style::default().bg(theme::SURFACE)),
+        )
+        .x_axis(x_axis)
+        .y_axis(y_axis)
+        .legend_position(Some(LegendPosition::TopRight))
+        .style(Style::default().bg(theme::SURFACE));
 
     frame.render_widget(chart, area);
-
-    // Legend at the bottom-right of the inner area
-    let legend = Line::from(vec![
-        Span::styled(" \u{2588} ", Style::default().fg(theme::SECONDARY)),
-        Span::styled("Input ", theme::dim()),
-        Span::styled(" \u{2588} ", Style::default().fg(theme::PRIMARY)),
-        Span::styled("Output ", theme::dim()),
-    ]);
-    let legend_width = 22u16;
-    if inner.width > legend_width + 2 && inner.height > 1 {
-        let legend_area = Rect::new(
-            inner.x + inner.width - legend_width - 1,
-            inner.y,
-            legend_width,
-            1,
-        );
-        frame.render_widget(Paragraph::new(legend), legend_area);
-    }
 }
 
 /// Format token count for display with appropriate suffix
@@ -234,7 +290,7 @@ fn format_tokens(count: u64) -> String {
     }
 }
 
-/// Shorter format for bar labels
+/// Shorter format for axis labels
 fn format_tokens_short(count: u64) -> String {
     if count >= 1_000_000 {
         format!("{:.0}M", count as f64 / 1_000_000.0)
@@ -245,7 +301,7 @@ fn format_tokens_short(count: u64) -> String {
     }
 }
 
-/// Shorten model names for display in chart labels
+/// Shorten model names for display in chart legend
 fn shorten_model_name(name: &str) -> String {
     // Strip common prefixes/suffixes to make names more readable
     let name = name.replace("claude-", "").replace("gemini-", "gem-");

@@ -271,6 +271,8 @@ pub struct App {
     pub cached_uptime: String,
     /// Cached token usage stats (fetched from /stats endpoint)
     pub cached_token_stats: Option<super::data::TokenStats>,
+    /// Rolling time-series of token usage per model
+    pub token_history: super::data::TokenHistory,
     /// Last time token stats were fetched
     last_token_stats_refresh: Instant,
     /// Last tab area width used for tab_areas calculation (for invalidation)
@@ -412,6 +414,7 @@ impl App {
             cached_requests_per_min: 0.0,
             cached_uptime: String::from("00:00:00"),
             cached_token_stats: None,
+            token_history: super::data::TokenHistory::new(),
             last_token_stats_refresh: Instant::now() - Duration::from_secs(10),
             cached_tabs_area: Rect::default(),
             log_level_filter: [true; 4],
@@ -512,6 +515,9 @@ impl App {
         }
         self.last_token_stats_refresh = Instant::now();
         self.cached_token_stats = super::data::DataProvider::fetch_token_stats();
+        if let Some(ref stats) = self.cached_token_stats {
+            self.token_history.push(stats);
+        }
     }
 
     /// Rebuild the filtered log indices based on current filter/search state
