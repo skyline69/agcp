@@ -595,6 +595,9 @@ pub struct TokenHistory {
     /// Unix timestamp of the quota period start (set from quota reset_time - 24h)
     #[serde(default)]
     pub period_start: Option<u64>,
+    /// Per-model offsets to add when the server restarts (so the line never drops)
+    #[serde(default)]
+    offsets: std::collections::HashMap<String, u64>,
 }
 
 impl Default for TokenHistory {
@@ -608,6 +611,7 @@ impl TokenHistory {
         Self {
             snapshots: Vec::new(),
             period_start: None,
+            offsets: std::collections::HashMap::new(),
         }
     }
 
@@ -641,16 +645,46 @@ impl TokenHistory {
             .unwrap_or_default()
             .as_secs();
 
-        let models: Vec<(String, u64)> = stats
+        let raw_models: Vec<(String, u64)> = stats
             .models
             .iter()
             .map(|m| (m.model.clone(), m.input_tokens + m.output_tokens))
             .collect();
 
         // Skip if no token data
-        if models.is_empty() || models.iter().all(|(_, t)| *t == 0) {
+        if raw_models.is_empty() || raw_models.iter().all(|(_, t)| *t == 0) {
             return false;
         }
+
+        // Detect server restart: if any model's raw total is less than the
+        // last snapshot's value (minus offset), the server counters reset.
+        // Accumulate the previous peak as an offset so the line never drops.
+        if let Some(last_snap) = self.snapshots.last() {
+            for (name, raw_total) in &raw_models {
+                let last_total = last_snap
+                    .models
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, t)| *t)
+                    .unwrap_or(0);
+                let current_offset = self.offsets.get(name).copied().unwrap_or(0);
+                let raw_with_offset = raw_total + current_offset;
+
+                if raw_with_offset < last_total {
+                    // Server restarted — the old peak becomes the new offset
+                    self.offsets.insert(name.clone(), last_total);
+                }
+            }
+        }
+
+        // Apply offsets to get the true cumulative values
+        let models: Vec<(String, u64)> = raw_models
+            .into_iter()
+            .map(|(name, raw)| {
+                let offset = self.offsets.get(&name).copied().unwrap_or(0);
+                (name, raw + offset)
+            })
+            .collect();
 
         self.snapshots.push(TokenSnapshot {
             timestamp: now,
@@ -680,6 +714,7 @@ impl TokenHistory {
     /// Reset the history (clear all snapshots). Called when quota period resets.
     pub fn reset(&mut self) {
         self.snapshots.clear();
+        self.offsets.clear();
         self.save();
     }
 
