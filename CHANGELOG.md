@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.2.2] - 2026-02-10
+
+
+### Bug Fixes
+
+- Zed compatibility — cap max_tokens, strip temperature for thinking models, add Zed setup ([f5564ba](https://github.com/skyline69/agcp/commit/f5564ba731fa48fea211d955dd9963cf21e26b49)) — Ö. Efe D.
+- Formatting ([1e1a836](https://github.com/skyline69/agcp/commit/1e1a8363efcdc7e39821beea4379aaae48b6d593)) — Ö. Efe D.
+
+
+### Miscellaneous
+
+- Update to v1.2.2 ([76c3304](https://github.com/skyline69/agcp/commit/76c33042f75e69067b23f0323d4c576ab1ce8a67)) — Ö. Efe D.
+
+
 ## [v1.2.1] - 2026-02-10
 
 
