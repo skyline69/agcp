@@ -98,6 +98,12 @@ pub fn resolve_model_alias(model: &str) -> &str {
     {
         return "claude-sonnet-4-5";
     }
+    // Claude 3.5 Haiku is not available on Cloud Code, map to Gemini 3 Flash
+    if starts_with_ignore_case(model, "claude-3-5-haiku")
+        || starts_with_ignore_case(model, "claude-3.5-haiku")
+    {
+        return "gemini-3-flash";
+    }
 
     // For alias matching, allocate only if we didn't match above
     let lower = model.to_ascii_lowercase();
@@ -299,6 +305,10 @@ impl MappingPreset {
                     to: "gemini-3-flash".into(),
                 },
                 MappingRule {
+                    from: "claude-3-5-haiku-*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
                     from: "claude-haiku-*".into(),
                     to: "gemini-3-flash".into(),
                 },
@@ -341,6 +351,10 @@ impl MappingPreset {
                     to: "gemini-3-flash".into(),
                 },
                 MappingRule {
+                    from: "claude-3-5-haiku-*".into(),
+                    to: "gemini-3-flash".into(),
+                },
+                MappingRule {
                     from: "claude-haiku-*".into(),
                     to: "gemini-3-flash".into(),
                 },
@@ -380,6 +394,10 @@ impl MappingPreset {
             MappingPreset::Cost => vec![
                 MappingRule {
                     from: "claude-3-haiku-*".into(),
+                    to: "gpt-oss-120b-medium".into(),
+                },
+                MappingRule {
+                    from: "claude-3-5-haiku-*".into(),
                     to: "gpt-oss-120b-medium".into(),
                 },
                 MappingRule {
@@ -494,6 +512,20 @@ mod tests {
             "gpt-oss-120b-medium"
         );
 
+        // Claude 3.5 Haiku dated names should map to gemini-3-flash
+        assert_eq!(
+            resolve_model_alias("claude-3-5-haiku-20241022"),
+            "gemini-3-flash"
+        );
+        assert_eq!(
+            resolve_model_alias("claude-3.5-haiku-20241022"),
+            "gemini-3-flash"
+        );
+        assert_eq!(
+            resolve_model_alias("claude-3-5-haiku-latest"),
+            "gemini-3-flash"
+        );
+
         // Unknown models pass through
         assert_eq!(resolve_model_alias("unknown-model"), "unknown-model");
     }
@@ -558,6 +590,11 @@ mod tests {
 
         // Real-world patterns
         assert!(glob_match("claude-3-haiku-*", "claude-3-haiku-20240307"));
+        assert!(glob_match(
+            "claude-3-5-haiku-*",
+            "claude-3-5-haiku-20241022"
+        ));
+        assert!(!glob_match("claude-3-haiku-*", "claude-3-5-haiku-20241022")); // 3-haiku does NOT match 3-5-haiku
         assert!(glob_match("o1-*", "o1-preview"));
         assert!(glob_match("o3-*", "o3-mini"));
         assert!(glob_match("claude-opus-4-*", "claude-opus-4-5-thinking"));
