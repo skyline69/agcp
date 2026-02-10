@@ -3,6 +3,19 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.2.1] - 2026-02-10
+
+
+### Bug Fixes
+
+- Map claude-3-5-haiku to gemini-3-flash to avoid 404 on Cloud Code ([0327047](https://github.com/skyline69/agcp/commit/0327047325b600f7094702a131edf3ceed005e51)) — Ö. Efe D.
+
+
+### Miscellaneous
+
+- Update version ([2ccc2a9](https://github.com/skyline69/agcp/commit/2ccc2a9644895636d088ff606c4089113d0a9894)) — Ö. Efe D.
+
+
 ## [v1.2.0] - 2026-02-09
 
 
