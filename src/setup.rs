@@ -431,6 +431,140 @@ fn configure_crush(config_path: &Path, proxy_url: &str) -> Result<(), String> {
 }
 
 // ============================================================================
+// Zed
+// ============================================================================
+
+fn zed_config_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("zed")
+        .join("settings.json")
+}
+
+fn detect_zed(config_path: &Path) -> bool {
+    // Check if zed config directory exists
+    config_path.parent().map(|p| p.exists()).unwrap_or(false)
+}
+
+fn is_zed_configured(config_path: &Path, proxy_url: &str) -> bool {
+    if !config_path.exists() {
+        return false;
+    }
+
+    let content = match fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    // Zed uses JSONC (JSON with comments) — strip comments before parsing
+    let clean = strip_jsonc_comments(&content);
+    let json: serde_json::Value = match serde_json::from_str(&clean) {
+        Ok(j) => j,
+        Err(_) => return false,
+    };
+
+    // Check language_models.anthropic.api_url
+    json.get("language_models")
+        .and_then(|lm| lm.get("anthropic"))
+        .and_then(|a| a.get("api_url"))
+        .and_then(|u| u.as_str())
+        .map(|u| u == proxy_url)
+        .unwrap_or(false)
+}
+
+fn configure_zed(config_path: &Path, proxy_url: &str) -> Result<(), String> {
+    // Read existing config or create new
+    let mut json: serde_json::Value = if config_path.exists() {
+        let content =
+            fs::read_to_string(config_path).map_err(|e| format!("Failed to read config: {}", e))?;
+        // Zed uses JSONC — strip comments before parsing
+        let clean = strip_jsonc_comments(&content);
+        serde_json::from_str(&clean).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Ensure language_models.anthropic object exists
+    if json.get("language_models").is_none() {
+        json["language_models"] = serde_json::json!({});
+    }
+    if json["language_models"].get("anthropic").is_none() {
+        json["language_models"]["anthropic"] = serde_json::json!({});
+    }
+
+    // Set api_url
+    json["language_models"]["anthropic"]["api_url"] =
+        serde_json::Value::String(proxy_url.to_string());
+
+    // Ensure parent directory exists
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create config dir: {}", e))?;
+    }
+
+    // Write config (note: comments from the original file will be lost,
+    // but we create a backup before modifying)
+    let content = serde_json::to_string_pretty(&json)
+        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    fs::write(config_path, content).map_err(|e| format!("Failed to write config: {}", e))?;
+
+    Ok(())
+}
+
+/// Strip single-line (//) comments from JSONC content.
+/// Handles comments inside strings (doesn't strip those).
+fn strip_jsonc_comments(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if escape_next {
+            escape_next = false;
+            result.push(ch);
+            continue;
+        }
+
+        if in_string {
+            if ch == '\\' {
+                escape_next = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            result.push(ch);
+        } else if ch == '"' {
+            in_string = true;
+            result.push(ch);
+        } else if ch == '/' && chars.peek() == Some(&'/') {
+            // Skip until end of line
+            for c in chars.by_ref() {
+                if c == '\n' {
+                    result.push('\n');
+                    break;
+                }
+            }
+        } else if ch == '/' && chars.peek() == Some(&'*') {
+            // Skip block comment
+            chars.next(); // consume '*'
+            let mut prev = ' ';
+            for c in chars.by_ref() {
+                if prev == '*' && c == '/' {
+                    break;
+                }
+                if c == '\n' {
+                    result.push('\n'); // preserve line count
+                }
+                prev = c;
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
+// ============================================================================
 // Main setup command
 // ============================================================================
 
@@ -469,6 +603,14 @@ fn get_tools() -> Vec<Tool> {
             is_configured: is_crush_configured,
             configure: configure_crush,
         },
+        Tool {
+            name: "Zed",
+            config_path: zed_config_path(),
+            backup_name: "zed-settings.json",
+            detect: detect_zed,
+            is_configured: is_zed_configured,
+            configure: configure_zed,
+        },
     ]
 }
 
@@ -501,6 +643,7 @@ pub fn run_setup_command(args: &[String]) {
         println!("  • Codex        ~/.codex/config.json");
         println!("  • OpenCode     ~/.config/opencode/opencode.json");
         println!("  • Crush        ~/.config/crush/crush.json");
+        println!("  • Zed          ~/.config/zed/settings.json");
         println!();
         return;
     }
@@ -570,6 +713,17 @@ pub fn run_setup_command(args: &[String]) {
                     );
                     println!("      {}Run: export ANTHROPIC_API_KEY=agcp{}", DIM, RESET);
                 }
+                // Show extra instructions for Zed
+                if tool.name == "Zed" {
+                    println!(
+                        "      {}Note: Set any Anthropic API key in Zed's settings{}",
+                        DIM, RESET
+                    );
+                    println!(
+                        "      {}Zed > Settings > Anthropic > API Key (any value works){}",
+                        DIM, RESET
+                    );
+                }
             }
             Err(e) => {
                 println!("{}✗ {}{}", YELLOW, e, RESET);
@@ -621,4 +775,49 @@ fn run_undo() {
         println!("{}No backups found to restore.{}", DIM, RESET);
     }
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_jsonc_comments() {
+        // Line comments
+        let input = r#"{
+  // This is a comment
+  "key": "value"
+}"#;
+        let clean = strip_jsonc_comments(input);
+        let parsed: serde_json::Value = serde_json::from_str(&clean).unwrap();
+        assert_eq!(parsed["key"], "value");
+
+        // Block comments
+        let input2 = r#"{ /* block */ "key": "value" }"#;
+        let clean2 = strip_jsonc_comments(input2);
+        let parsed2: serde_json::Value = serde_json::from_str(&clean2).unwrap();
+        assert_eq!(parsed2["key"], "value");
+
+        // Comments inside strings should be preserved
+        let input3 = r#"{ "key": "http://example.com" }"#;
+        let clean3 = strip_jsonc_comments(input3);
+        let parsed3: serde_json::Value = serde_json::from_str(&clean3).unwrap();
+        assert_eq!(parsed3["key"], "http://example.com");
+
+        // Zed-style config
+        let input4 = r#"// Zed settings
+{
+  "language_models": {
+    "anthropic": {
+      "api_url": "http://127.0.0.1:3092"
+    }
+  }
+}"#;
+        let clean4 = strip_jsonc_comments(input4);
+        let parsed4: serde_json::Value = serde_json::from_str(&clean4).unwrap();
+        assert_eq!(
+            parsed4["language_models"]["anthropic"]["api_url"],
+            "http://127.0.0.1:3092"
+        );
+    }
 }

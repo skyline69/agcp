@@ -7,10 +7,15 @@ use crate::format::google::{
     InlineData, InlineDataPart, Part, TextPart, ThinkingConfig, ThoughtPart, ToolConfig,
 };
 use crate::format::signature_cache::{
-    GEMINI_SKIP_SIGNATURE, MIN_SIGNATURE_LENGTH, ModelFamily, get_cached_tool_signature,
-    is_signature_compatible,
+    get_cached_tool_signature, is_signature_compatible, ModelFamily, GEMINI_SKIP_SIGNATURE,
+    MIN_SIGNATURE_LENGTH,
 };
 use crate::models::{get_model_family, is_thinking_model};
+
+/// Cloud Code API max output token limits per model family.
+/// Requests exceeding these are silently capped to avoid 400 errors.
+const CLAUDE_MAX_OUTPUT_TOKENS: u32 = 64000;
+const GEMINI_MAX_OUTPUT_TOKENS: u32 = 65536;
 
 pub fn convert_request(request: &MessagesRequest) -> GenerateContentRequest {
     let is_thinking = is_thinking_model(&request.model);
@@ -35,15 +40,26 @@ pub fn convert_request(request: &MessagesRequest) -> GenerateContentRequest {
         None
     };
 
-    // Google Cloud Code has a lower maxOutputTokens limit than the Anthropic API.
-    // The exact limit is 64000 — values above this cause INVALID_ARGUMENT errors.
-    let max_output_tokens = request.max_tokens.min(64000);
+    // Claude thinking models reject explicit temperature/top_p/top_k
+    // (they use fixed temperature=1.0 internally)
+    let (temperature, top_p, top_k) = if is_thinking && model_family == "claude" {
+        (None, None, None)
+    } else {
+        (request.temperature, request.top_p, request.top_k)
+    };
+
+    // Cap max_output_tokens to Cloud Code API limits
+    let max_tokens = match model_family {
+        "claude" => request.max_tokens.min(CLAUDE_MAX_OUTPUT_TOKENS),
+        "gemini" => request.max_tokens.min(GEMINI_MAX_OUTPUT_TOKENS),
+        _ => request.max_tokens,
+    };
 
     let generation_config = Some(GenerationConfig {
-        max_output_tokens: Some(max_output_tokens),
-        temperature: request.temperature,
-        top_p: request.top_p,
-        top_k: request.top_k,
+        max_output_tokens: Some(max_tokens),
+        temperature,
+        top_p,
+        top_k,
         stop_sequences: request.stop_sequences.clone(),
         thinking_config,
     });
@@ -256,6 +272,27 @@ fn convert_tool_choice(choice: &ToolChoice) -> ToolConfig {
 fn sanitize_schema(schema: &serde_json::Value) -> serde_json::Value {
     match schema {
         serde_json::Value::Object(obj) => {
+            // Handle anyOf/oneOf by flattening to the first non-null variant
+            if let Some(serde_json::Value::Array(arr)) =
+                obj.get("anyOf").or_else(|| obj.get("oneOf"))
+            {
+                // Find first non-null variant schema
+                let non_null = arr
+                    .iter()
+                    .find(|v| v.get("type").and_then(|t| t.as_str()) != Some("null"));
+                if let Some(variant) = non_null {
+                    // Merge description from parent if variant doesn't have one
+                    let mut merged = variant.clone();
+                    if let (Some(desc), Some(obj_mut)) =
+                        (obj.get("description"), merged.as_object_mut())
+                    {
+                        obj_mut.entry("description").or_insert_with(|| desc.clone());
+                    }
+                    return sanitize_schema(&merged);
+                }
+                // All null or empty - fall through to default handling
+            }
+
             const ALLOWED_FIELDS: &[&str] = &[
                 "type",
                 "description",
@@ -281,6 +318,20 @@ fn sanitize_schema(schema: &serde_json::Value) -> serde_json::Value {
 
                 // Recursively sanitize nested structures
                 match key.as_str() {
+                    // Handle "type": ["string", "null"] -> "type": "string"
+                    "type" => {
+                        let sanitized_type = match value {
+                            serde_json::Value::Array(arr) => {
+                                // Pick the first non-null type
+                                arr.iter()
+                                    .find(|t| t.as_str() != Some("null"))
+                                    .cloned()
+                                    .unwrap_or_else(|| serde_json::json!("string"))
+                            }
+                            other => other.clone(),
+                        };
+                        clean.insert(key.clone(), sanitized_type);
+                    }
                     "properties" => {
                         if let serde_json::Value::Object(props) = value {
                             let mut sanitized_props = serde_json::Map::new();
@@ -523,6 +574,73 @@ mod tests {
         assert!(
             has_signature,
             "FunctionCall should have skip_thought_signature_validator for Gemini models"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_schema_array_type() {
+        // Zed sends "type": ["string", "null"] for nullable params
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": ["string", "null"]}
+            },
+            "required": ["name"]
+        });
+
+        let sanitized = sanitize_schema(&schema);
+        let desc_type = sanitized["properties"]["description"]["type"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            desc_type, "string",
+            "Array type should be flattened to first non-null type"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_schema_anyof() {
+        // anyOf pattern for nullable types
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "value": {
+                    "anyOf": [
+                        {"type": "string", "description": "A string value"},
+                        {"type": "null"}
+                    ]
+                }
+            }
+        });
+
+        let sanitized = sanitize_schema(&schema);
+        let value_type = sanitized["properties"]["value"]["type"].as_str().unwrap();
+        assert_eq!(
+            value_type, "string",
+            "anyOf should be flattened to first non-null variant"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_schema_oneof() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "data": {
+                    "oneOf": [
+                        {"type": "integer"},
+                        {"type": "null"}
+                    ]
+                }
+            }
+        });
+
+        let sanitized = sanitize_schema(&schema);
+        let data_type = sanitized["properties"]["data"]["type"].as_str().unwrap();
+        assert_eq!(
+            data_type, "integer",
+            "oneOf should be flattened to first non-null variant"
         );
     }
 }
