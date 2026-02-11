@@ -1,14 +1,16 @@
-use http_body_util::{BodyExt, Full};
-use hyper::body::Bytes;
+use http_body_util::{BodyExt, Either, Full};
+use hyper::body::{Bytes, Frame};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{debug, info, trace, warn};
 
 use crate::auth::HttpClient;
@@ -28,6 +30,57 @@ use crate::stats::get_stats;
 
 /// Maximum request body size (10 MB).
 const MAX_REQUEST_SIZE: usize = 10 * 1024 * 1024;
+
+/// Channel buffer size for streaming SSE responses.
+///
+/// Sized to allow the upstream parser to stay ahead of the client without
+/// unbounded memory growth.  Each item is a small SSE text frame.
+const STREAM_CHANNEL_BUFFER: usize = 64;
+
+/// A streaming response body backed by an `mpsc` channel.
+///
+/// Each received `Bytes` value is emitted as a single DATA frame.
+/// When the sender is dropped the body signals end-of-stream.
+pub struct ChannelBody {
+    rx: mpsc::Receiver<Bytes>,
+}
+
+impl ChannelBody {
+    fn new(rx: mpsc::Receiver<Bytes>) -> Self {
+        Self { rx }
+    }
+}
+
+impl hyper::body::Body for ChannelBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match self.rx.poll_recv(cx) {
+            Poll::Ready(Some(bytes)) => Poll::Ready(Some(Ok(Frame::data(bytes)))),
+            Poll::Ready(None) => Poll::Ready(None), // channel closed = end of stream
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// Response body type: either a buffered `Full<Bytes>` (non-streaming) or a
+/// channel-backed streaming body.
+type ResponseBody = Either<Full<Bytes>, ChannelBody>;
+
+/// Wrap a `Full<Bytes>` into the unified response body type.
+fn full_body(body: Full<Bytes>) -> ResponseBody {
+    Either::Left(body)
+}
+
+/// Create a streaming response body, returning the sender and body.
+fn streaming_body() -> (mpsc::Sender<Bytes>, ResponseBody) {
+    let (tx, rx) = mpsc::channel(STREAM_CHANNEL_BUFFER);
+    (tx, Either::Right(ChannelBody::new(rx)))
+}
 
 /// Shared server state passed to all request handlers.
 ///
@@ -71,7 +124,7 @@ async fn handle_request(
     req: Request<hyper::body::Incoming>,
     state: Arc<ServerState>,
     remote_addr: SocketAddr,
-) -> Result<Response<Full<Bytes>>, hyper::Error> {
+) -> Result<Response<ResponseBody>, hyper::Error> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
     let request_id = generate_request_id();
@@ -162,7 +215,7 @@ async fn handle_request(
                 Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", "application/json")
-                    .body(Full::new(Bytes::from(json)))
+                    .body(full_body(Full::new(Bytes::from(json))))
                     .unwrap())
             }
 
@@ -284,51 +337,95 @@ fn generate_request_id() -> String {
     format!("req_{:016x}", nanos)
 }
 
-/// Get access token and project ID using account selection strategy
+/// Get access token and project ID using account selection strategy.
+///
+/// The write lock is held only briefly for account selection and bookkeeping.
+/// Token refresh (network I/O) happens outside the lock to avoid blocking
+/// concurrent requests.
 /// Returns (access_token, project_id, account_id, account_email)
 async fn get_account_credentials(
     state: &Arc<ServerState>,
     model: &str,
 ) -> Result<(String, String, String, String), Error> {
-    let mut accounts = state.accounts.write().await;
+    // Phase 1: Select account and extract data under a brief write lock.
+    // If the cached token is still valid we return immediately.
+    let (account_id, project_id, email, token_or_refresh) = {
+        let mut accounts = state.accounts.write().await;
 
-    let account_id = accounts.select_account(model).ok_or_else(|| {
-        Error::Auth(AuthError::OAuthFailed(
-            "No enabled accounts available. Run 'agcp login' to add an account.".to_string(),
-        ))
-    })?;
+        let account_id = accounts.select_account(model).ok_or_else(|| {
+            Error::Auth(AuthError::OAuthFailed(
+                "No enabled accounts available. Run 'agcp login' to add an account.".to_string(),
+            ))
+        })?;
 
-    let account = accounts.get_account_mut(&account_id).ok_or_else(|| {
-        Error::Auth(AuthError::OAuthFailed(
-            "Selected account not found".to_string(),
-        ))
-    })?;
+        let account = accounts.get_account_mut(&account_id).ok_or_else(|| {
+            Error::Auth(AuthError::OAuthFailed(
+                "Selected account not found".to_string(),
+            ))
+        })?;
 
-    let access_token = account.get_access_token(&state.http_client).await?;
-    let project_id = account.project_id.clone().unwrap_or_default();
-    let id = account.id.clone();
-    let email = account.email.clone();
+        let project_id = account.project_id.clone().unwrap_or_default();
+        let id = account.id.clone();
+        let email_val = account.email.clone();
 
-    // Update last_used timestamp and consume a token
-    account.last_used = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    account.consume_token();
+        // Update last_used timestamp and consume a token
+        account.last_used = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        account.consume_token();
 
-    drop(accounts);
+        if account.is_access_token_valid() {
+            // Fast path: token is still valid, no network I/O needed.
+            let token = account.access_token.clone().unwrap();
+            (id, project_id, email_val, Ok(token))
+        } else {
+            // Slow path: need to refresh. Clone the refresh token and release the lock.
+            let refresh_token = account.refresh_token.clone();
+            (id, project_id, email_val, Err(refresh_token))
+        }
+        // Write lock is dropped here.
+    };
+
+    let access_token = match token_or_refresh {
+        Ok(token) => token,
+        Err(refresh_token) => {
+            // Phase 2: Refresh token outside the lock (network I/O).
+            let (new_token, expires_in) =
+                crate::auth::token::refresh_access_token(&state.http_client, &refresh_token)
+                    .await?;
+
+            // Phase 3: Store the refreshed token under a brief write lock.
+            {
+                let mut accounts = state.accounts.write().await;
+                if let Some(account) = accounts.get_account_mut(&account_id) {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    account.access_token = Some(new_token.clone());
+                    account.access_token_expires = Some(now + expires_in);
+                }
+            }
+
+            new_token
+        }
+    };
 
     debug!(
         model = %model,
-        account_id = %&id[..8.min(id.len())],
+        account_id = %&account_id[..8.min(account_id.len())],
         project_id = %project_id,
         "Using account credentials"
     );
 
-    Ok((access_token, project_id, id, email))
+    Ok((access_token, project_id, account_id, email))
 }
 
-/// Record request outcome for an account
+/// Record request outcome for an account.
+///
+/// File I/O (account state persistence) is offloaded to a blocking task so the
+/// write lock is only held for in-memory bookkeeping and serialization.
 async fn record_request_outcome(
     state: &Arc<ServerState>,
     account_id: &str,
@@ -336,31 +433,50 @@ async fn record_request_outcome(
     success: bool,
     rate_limit_until: Option<u64>,
 ) {
-    let mut accounts = state.accounts.write().await;
+    // Serialize under the lock, then write to disk outside the lock.
+    let save_data = {
+        let mut accounts = state.accounts.write().await;
 
-    if let Some(account) = accounts.get_account_mut(account_id) {
-        if success {
-            account.record_success();
-            account.clear_rate_limit(model);
-        } else {
-            account.record_failure();
-            if let Some(until) = rate_limit_until {
-                account.set_rate_limit(model, until);
-                debug!(
-                    account = %&account_id[..8],
-                    model = %model,
-                    until = until,
-                    "Set rate limit for account"
-                );
+        if let Some(account) = accounts.get_account_mut(account_id) {
+            if success {
+                account.record_success();
+                account.clear_rate_limit(model);
+            } else {
+                account.record_failure();
+                if let Some(until) = rate_limit_until {
+                    account.set_rate_limit(model, until);
+                    debug!(
+                        account = %&account_id[..8],
+                        model = %model,
+                        until = until,
+                        "Set rate limit for account"
+                    );
+                }
             }
         }
-    }
 
-    // Periodically save account state (simple approach: save on failure or rate limit)
-    if (!success || rate_limit_until.is_some())
-        && let Err(e) = accounts.save()
-    {
-        warn!(error = %e, "Failed to save account state");
+        // Only serialize if we need to persist (failure or rate limit)
+        if !success || rate_limit_until.is_some() {
+            serde_json::to_string_pretty(&*accounts)
+                .ok()
+                .map(|json| (crate::auth::accounts::AccountStore::path(), json))
+        } else {
+            None
+        }
+        // Write lock is dropped here.
+    };
+
+    // Write to disk outside the lock using a blocking task.
+    if let Some((path, json)) = save_data {
+        let dir = path.parent().map(|p| p.to_path_buf());
+        tokio::task::spawn_blocking(move || {
+            if let Some(dir) = dir {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Err(e) = std::fs::write(&path, json) {
+                tracing::warn!(error = %e, "Failed to save account state");
+            }
+        });
     }
 }
 
@@ -371,7 +487,7 @@ async fn track_request_outcome(
     account_email: &str,
     model: &str,
     request_id: &str,
-    result: &Result<Response<Full<Bytes>>, Error>,
+    result: &Result<Response<ResponseBody>, Error>,
 ) {
     let (success, rate_limit_until) = match result {
         Ok(_) => {
@@ -417,7 +533,7 @@ async fn handle_messages(
     req: Request<hyper::body::Incoming>,
     state: Arc<ServerState>,
     request_id: &str,
-) -> Result<Response<Full<Bytes>>, Error> {
+) -> Result<Response<ResponseBody>, Error> {
     // Extract headers before consuming request
     let bypass_cache = should_bypass_cache(req.headers());
 
@@ -500,7 +616,7 @@ async fn execute_messages_request(
     request_id: &str,
     is_fallback: bool,
     bypass_cache: bool,
-) -> Result<Response<Full<Bytes>>, Error> {
+) -> Result<Response<ResponseBody>, Error> {
     let is_streaming = messages_request.stream;
     let model = &messages_request.model;
 
@@ -612,7 +728,7 @@ async fn handle_chat_completions(
     req: Request<hyper::body::Incoming>,
     state: Arc<ServerState>,
     request_id: &str,
-) -> Result<Response<Full<Bytes>>, Error> {
+) -> Result<Response<ResponseBody>, Error> {
     let content_type = req
         .headers()
         .get("content-type")
@@ -699,7 +815,7 @@ async fn execute_openai_request(
     state: &Arc<ServerState>,
     request_id: &str,
     is_fallback: bool,
-) -> Result<Response<Full<Bytes>>, Error> {
+) -> Result<Response<ResponseBody>, Error> {
     let is_streaming = messages_request.stream;
     let model = &messages_request.model;
 
@@ -772,7 +888,7 @@ async fn handle_openai_non_streaming(
     access_token: &str,
     model: &str,
     request_id: &str,
-) -> Result<Response<Full<Bytes>>, Error> {
+) -> Result<Response<ResponseBody>, Error> {
     let response = client.send_request(body, access_token, model).await?;
     let anthropic_response = parse_response(&response, model, request_id);
     record_usage(model, &anthropic_response.usage);
@@ -792,7 +908,7 @@ async fn handle_openai_thinking_non_streaming(
     access_token: &str,
     model: &str,
     request_id: &str,
-) -> Result<Response<Full<Bytes>>, Error> {
+) -> Result<Response<ResponseBody>, Error> {
     let (events, _body_bytes) = collect_sse_events(client, body, access_token, model).await?;
 
     check_stream_errors(
@@ -813,73 +929,91 @@ async fn handle_openai_thinking_non_streaming(
     Ok(json_ok_response(response_body, request_id, Some("BYPASS")))
 }
 
+/// Handle OpenAI-format streaming with true SSE pass-through.
+///
+/// Each upstream Anthropic-format event is converted to an OpenAI
+/// `chat.completion.chunk` and forwarded through the channel immediately.
 async fn handle_openai_streaming(
     client: &CloudCodeClient,
     body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
-) -> Result<Response<Full<Bytes>>, Error> {
-    use crate::format::openai::{ChatCompletionChunk, ChatUsage, ChunkChoice, ChunkDelta};
-    use std::time::{SystemTime, UNIX_EPOCH};
+) -> Result<Response<ResponseBody>, Error> {
+    let upstream = client
+        .send_streaming_request(body, access_token, model)
+        .await?;
 
-    let (all_events, _body_bytes) = collect_sse_events(client, body, access_token, model).await?;
-    let mut output = String::new();
+    let (tx, body) = streaming_body();
+    let response = sse_streaming_response(body, request_id);
 
-    let created = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let model = model.to_string();
+    let request_id = request_id.to_string();
 
-    let chunk_id = format!("chatcmpl-{}", request_id);
+    tokio::spawn(async move {
+        use crate::format::openai::{ChatCompletionChunk, ChatUsage, ChunkChoice, ChunkDelta};
+        use std::time::{SystemTime, UNIX_EPOCH};
 
-    check_stream_errors(&all_events, model, request_id, " (OpenAI streaming)")?;
+        let created = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let chunk_id = format!("chatcmpl-{}", request_id);
 
-    let mut input_tokens = 0u32;
-    let mut output_tokens = 0u32;
-    let mut sent_role = false;
+        let mut parser = SseParser::new(&model);
+        let mut input_tokens = 0u32;
+        let mut output_tokens = 0u32;
+        let mut sent_role = false;
 
-    for event in &all_events {
-        match event {
-            StreamEvent::MessageStart { message } => {
-                input_tokens = message.usage.input_tokens;
-                // Send initial chunk with role
-                let chunk = ChatCompletionChunk {
-                    id: chunk_id.clone(),
-                    object: "chat.completion.chunk".to_string(),
-                    created,
-                    model: model.to_string(),
-                    choices: vec![ChunkChoice {
-                        index: 0,
-                        delta: ChunkDelta {
-                            role: Some("assistant".to_string()),
-                            content: None,
-                            tool_calls: None,
-                        },
-                        finish_reason: None,
-                        logprobs: None,
-                    }],
-                    usage: None,
-                    system_fingerprint: None,
-                };
-                output.push_str(&format!(
-                    "data: {}\n\n",
-                    serde_json::to_string(&chunk).unwrap_or_default()
-                ));
-                sent_role = true;
-            }
-            StreamEvent::ContentBlockDelta { delta, .. } => {
-                match delta {
+        // Helper closure: serialize and send a chunk
+        let send_chunk = |tx: &mpsc::Sender<Bytes>, chunk: &ChatCompletionChunk| -> bool {
+            let data = format!(
+                "data: {}\n\n",
+                serde_json::to_string(chunk).unwrap_or_default()
+            );
+            tx.try_send(Bytes::from(data)).is_ok()
+        };
+
+        let process_event = |event: &StreamEvent,
+                             tx: &mpsc::Sender<Bytes>,
+                             input_tokens: &mut u32,
+                             output_tokens: &mut u32,
+                             sent_role: &mut bool| {
+            match event {
+                StreamEvent::MessageStart { message } => {
+                    *input_tokens = message.usage.input_tokens;
+                    let chunk = ChatCompletionChunk {
+                        id: chunk_id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created,
+                        model: model.clone(),
+                        choices: vec![ChunkChoice {
+                            index: 0,
+                            delta: ChunkDelta {
+                                role: Some("assistant".to_string()),
+                                content: None,
+                                tool_calls: None,
+                            },
+                            finish_reason: None,
+                            logprobs: None,
+                        }],
+                        usage: None,
+                        system_fingerprint: None,
+                    };
+                    send_chunk(tx, &chunk);
+                    *sent_role = true;
+                }
+                StreamEvent::ContentBlockDelta { delta, .. } => match delta {
                     crate::format::ContentDelta::Text { text } => {
                         let chunk = ChatCompletionChunk {
                             id: chunk_id.clone(),
                             object: "chat.completion.chunk".to_string(),
                             created,
-                            model: model.to_string(),
+                            model: model.clone(),
                             choices: vec![ChunkChoice {
                                 index: 0,
                                 delta: ChunkDelta {
-                                    role: if !sent_role {
+                                    role: if !*sent_role {
                                         Some("assistant".to_string())
                                     } else {
                                         None
@@ -893,19 +1027,15 @@ async fn handle_openai_streaming(
                             usage: None,
                             system_fingerprint: None,
                         };
-                        output.push_str(&format!(
-                            "data: {}\n\n",
-                            serde_json::to_string(&chunk).unwrap_or_default()
-                        ));
-                        sent_role = true;
+                        send_chunk(tx, &chunk);
+                        *sent_role = true;
                     }
                     crate::format::ContentDelta::Thinking { thinking } => {
-                        // Include thinking as text with markers
                         let chunk = ChatCompletionChunk {
                             id: chunk_id.clone(),
                             object: "chat.completion.chunk".to_string(),
                             created,
-                            model: model.to_string(),
+                            model: model.clone(),
                             choices: vec![ChunkChoice {
                                 index: 0,
                                 delta: ChunkDelta {
@@ -919,53 +1049,83 @@ async fn handle_openai_streaming(
                             usage: None,
                             system_fingerprint: None,
                         };
-                        output.push_str(&format!(
-                            "data: {}\n\n",
-                            serde_json::to_string(&chunk).unwrap_or_default()
-                        ));
+                        send_chunk(tx, &chunk);
                     }
                     _ => {}
+                },
+                StreamEvent::MessageDelta { delta, usage } => {
+                    *output_tokens = usage.output_tokens;
+                    let finish_reason = delta.stop_reason.map(|r| r.to_openai_str().to_string());
+                    let chunk = ChatCompletionChunk {
+                        id: chunk_id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created,
+                        model: model.clone(),
+                        choices: vec![ChunkChoice {
+                            index: 0,
+                            delta: ChunkDelta {
+                                role: None,
+                                content: None,
+                                tool_calls: None,
+                            },
+                            finish_reason,
+                            logprobs: None,
+                        }],
+                        usage: Some(ChatUsage {
+                            prompt_tokens: *input_tokens,
+                            completion_tokens: *output_tokens,
+                            total_tokens: *input_tokens + *output_tokens,
+                        }),
+                        system_fingerprint: None,
+                    };
+                    send_chunk(tx, &chunk);
                 }
+                _ => {}
             }
-            StreamEvent::MessageDelta { delta, usage } => {
-                output_tokens = usage.output_tokens;
-                let finish_reason = delta.stop_reason.map(|r| r.to_openai_str().to_string());
+        };
 
-                let chunk = ChatCompletionChunk {
-                    id: chunk_id.clone(),
-                    object: "chat.completion.chunk".to_string(),
-                    created,
-                    model: model.to_string(),
-                    choices: vec![ChunkChoice {
-                        index: 0,
-                        delta: ChunkDelta {
-                            role: None,
-                            content: None,
-                            tool_calls: None,
-                        },
-                        finish_reason,
-                        logprobs: None,
-                    }],
-                    usage: Some(ChatUsage {
-                        prompt_tokens: input_tokens,
-                        completion_tokens: output_tokens,
-                        total_tokens: input_tokens + output_tokens,
-                    }),
-                    system_fingerprint: None,
-                };
-                output.push_str(&format!(
-                    "data: {}\n\n",
-                    serde_json::to_string(&chunk).unwrap_or_default()
-                ));
+        let mut incoming = upstream.into_body();
+
+        loop {
+            use http_body_util::BodyExt;
+            match incoming.frame().await {
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data() {
+                        let chunk_str = String::from_utf8_lossy(&data);
+                        for event in parser.feed(&chunk_str) {
+                            process_event(
+                                &event,
+                                &tx,
+                                &mut input_tokens,
+                                &mut output_tokens,
+                                &mut sent_role,
+                            );
+                        }
+                    }
+                }
+                Some(Err(e)) => {
+                    warn!(error = %e, "Error reading upstream for OpenAI streaming");
+                    break;
+                }
+                None => break,
             }
-            _ => {}
         }
-    }
 
-    get_stats().record_token_usage(model, input_tokens, output_tokens, 0);
-    output.push_str("data: [DONE]\n\n");
+        for event in parser.finish() {
+            process_event(
+                &event,
+                &tx,
+                &mut input_tokens,
+                &mut output_tokens,
+                &mut sent_role,
+            );
+        }
 
-    Ok(sse_ok_response(output, request_id))
+        get_stats().record_token_usage(&model, input_tokens, output_tokens, 0);
+        let _ = tx.send(Bytes::from("data: [DONE]\n\n")).await;
+    });
+
+    Ok(response)
 }
 
 // ============================================================================
@@ -976,7 +1136,7 @@ async fn handle_responses(
     req: Request<hyper::body::Incoming>,
     state: Arc<ServerState>,
     request_id: &str,
-) -> Result<Response<Full<Bytes>>, Error> {
+) -> Result<Response<ResponseBody>, Error> {
     let content_type = req
         .headers()
         .get("content-type")
@@ -1121,7 +1281,7 @@ async fn handle_responses_non_streaming(
     access_token: &str,
     model: &str,
     request_id: &str,
-) -> Result<Response<Full<Bytes>>, Error> {
+) -> Result<Response<ResponseBody>, Error> {
     let response = client.send_request(body, access_token, model).await?;
     let anthropic_response = parse_response(&response, model, request_id);
     record_usage(model, &anthropic_response.usage);
@@ -1142,7 +1302,7 @@ async fn handle_responses_thinking_non_streaming(
     access_token: &str,
     model: &str,
     request_id: &str,
-) -> Result<Response<Full<Bytes>>, Error> {
+) -> Result<Response<ResponseBody>, Error> {
     let (all_events, _body_bytes) = collect_sse_events(client, body, access_token, model).await?;
 
     check_stream_errors(
@@ -1165,170 +1325,155 @@ async fn handle_responses_thinking_non_streaming(
     Ok(json_ok_response(body, request_id, None))
 }
 
+/// Handle Responses API streaming with true SSE pass-through.
+///
+/// Converts upstream Anthropic-format stream events to OpenAI Responses API
+/// streaming events and forwards them through a channel as they arrive.
 async fn handle_responses_streaming(
     client: &CloudCodeClient,
     body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
-) -> Result<Response<Full<Bytes>>, Error> {
-    use crate::format::responses::{
-        InputTokensDetails, OutputTokensDetails, ResponseOutputContent, ResponseOutputItem,
-        ResponseStreamEvent, ResponseUsage, ResponsesResponse,
-    };
-    use std::time::{SystemTime, UNIX_EPOCH};
+) -> Result<Response<ResponseBody>, Error> {
+    let upstream = client
+        .send_streaming_request(body, access_token, model)
+        .await?;
 
-    let (all_events, _body_bytes) = collect_sse_events(client, body, access_token, model).await?;
-    let mut output = String::new();
+    let (tx, body) = streaming_body();
+    let response = sse_streaming_response(body, request_id);
 
-    let created_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64();
+    let model = model.to_string();
+    let request_id = request_id.to_string();
 
-    let resp_id = format!("resp_{}", request_id);
-
-    check_stream_errors(&all_events, model, request_id, " (Responses streaming)")?;
-
-    // Log event count for debugging
-    trace!(
-        request_id = %request_id,
-        event_count = all_events.len(),
-        "Responses streaming: parsed events"
-    );
-
-    // Log each event type for debugging
-    for (i, event) in all_events.iter().enumerate() {
-        let event_type = match event {
-            StreamEvent::MessageStart { .. } => "MessageStart",
-            StreamEvent::ContentBlockStart { .. } => "ContentBlockStart",
-            StreamEvent::ContentBlockDelta { .. } => "ContentBlockDelta",
-            StreamEvent::ContentBlockStop { .. } => "ContentBlockStop",
-            StreamEvent::MessageDelta { .. } => "MessageDelta",
-            StreamEvent::MessageStop => "MessageStop",
-            StreamEvent::Ping => "Ping",
-            StreamEvent::Error { .. } => "Error",
+    tokio::spawn(async move {
+        use crate::format::responses::{
+            InputTokensDetails, OutputTokensDetails, ResponseOutputContent, ResponseOutputItem,
+            ResponseStreamEvent, ResponseUsage, ResponsesResponse,
         };
-        trace!(request_id = %request_id, index = i, event_type = event_type, "Event");
-    }
+        use std::time::{SystemTime, UNIX_EPOCH};
 
-    // Track state for building response
-    let mut input_tokens = 0u32;
-    let mut output_tokens = 0u32;
-    let mut cache_read_tokens = 0u32;
-    let mut reasoning_tokens = 0u32;
-    let mut text_content = String::new();
-    let mut reasoning_content = String::new();
-    let mut sent_initial = false;
-    let mut message_added = false;
-    let mut output_index = 0usize;
-    let content_index = 0usize;
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let resp_id = format!("resp_{}", request_id);
 
-    // Track tool calls
-    let mut tool_calls: Vec<(String, String, String)> = vec![]; // (id, name, arguments)
-    let mut current_tool_json = String::new();
-    let mut current_tool_id = String::new();
-    let mut current_tool_name = String::new();
+        let mut parser = SseParser::new(&model);
+        let mut input_tokens = 0u32;
+        let mut output_tokens = 0u32;
+        let mut cache_read_tokens = 0u32;
+        let mut reasoning_tokens = 0u32;
+        let mut text_content = String::new();
+        let mut reasoning_content = String::new();
+        let mut sent_initial = false;
+        let mut message_added = false;
+        let mut output_index = 0usize;
+        let content_index = 0usize;
 
-    // Helper to emit SSE event
-    fn emit_event(output: &mut String, event: &ResponseStreamEvent) {
-        output.push_str("data: ");
-        output.push_str(&serde_json::to_string(event).unwrap_or_default());
-        output.push_str("\n\n");
-    }
+        let mut tool_calls: Vec<(String, String, String)> = vec![];
+        let mut current_tool_json = String::new();
+        let mut current_tool_id = String::new();
+        let mut current_tool_name = String::new();
 
-    // Create initial empty response for created event
-    let make_response = |status: &'static str,
-                         out: Vec<ResponseOutputItem>,
-                         usage: Option<ResponseUsage>|
-     -> ResponsesResponse {
-        ResponsesResponse {
-            id: resp_id.clone(),
-            object: "response",
-            created_at,
-            model: model.to_string(),
-            output: out,
-            parallel_tool_calls: true,
-            tool_choice: "auto",
-            tools: vec![],
-            temperature: None,
-            top_p: None,
-            max_output_tokens: None,
-            usage,
-            status,
-        }
-    };
+        // Helper: send a Responses API SSE event through the channel.
+        let emit = |tx: &mpsc::Sender<Bytes>, event: &ResponseStreamEvent| {
+            let data = format!(
+                "data: {}\n\n",
+                serde_json::to_string(event).unwrap_or_default()
+            );
+            let _ = tx.try_send(Bytes::from(data));
+        };
 
-    for event in &all_events {
-        match event {
-            StreamEvent::MessageStart { message } => {
-                input_tokens = message.usage.input_tokens;
-                cache_read_tokens = message.usage.cache_read_input_tokens.unwrap_or(0);
-
-                if !sent_initial {
-                    // Emit response.created
-                    emit_event(
-                        &mut output,
-                        &ResponseStreamEvent::ResponseCreated {
-                            response: Box::new(make_response("in_progress", vec![], None)),
-                        },
-                    );
-                    sent_initial = true;
-                }
+        let make_response = |status: &'static str,
+                             out: Vec<ResponseOutputItem>,
+                             usage: Option<ResponseUsage>|
+         -> ResponsesResponse {
+            ResponsesResponse {
+                id: resp_id.clone(),
+                object: "response",
+                created_at,
+                model: model.clone(),
+                output: out,
+                parallel_tool_calls: true,
+                tool_choice: "auto",
+                tools: vec![],
+                temperature: None,
+                top_p: None,
+                max_output_tokens: None,
+                usage,
+                status,
             }
-            StreamEvent::ContentBlockStart {
-                content_block,
-                index,
-            } => {
-                let block_type = match content_block {
-                    crate::format::ContentBlock::Text { .. } => "Text",
-                    crate::format::ContentBlock::Thinking { .. } => "Thinking",
-                    crate::format::ContentBlock::ToolUse { .. } => "ToolUse",
-                    _ => "Other",
-                };
-                trace!(request_id = %request_id, block_type = block_type, index = index, "ContentBlockStart type");
+        };
 
-                match content_block {
+        // ---- Process events from upstream ----
+        let process_event = |event: &StreamEvent,
+                             tx: &mpsc::Sender<Bytes>,
+                             input_tokens: &mut u32,
+                             output_tokens: &mut u32,
+                             cache_read_tokens: &mut u32,
+                             reasoning_tokens: &mut u32,
+                             text_content: &mut String,
+                             reasoning_content: &mut String,
+                             sent_initial: &mut bool,
+                             message_added: &mut bool,
+                             output_index: &mut usize,
+                             tool_calls: &mut Vec<(String, String, String)>,
+                             current_tool_json: &mut String,
+                             current_tool_id: &mut String,
+                             current_tool_name: &mut String| {
+            match event {
+                StreamEvent::MessageStart { message } => {
+                    *input_tokens = message.usage.input_tokens;
+                    *cache_read_tokens = message.usage.cache_read_input_tokens.unwrap_or(0);
+                    if !*sent_initial {
+                        emit(
+                            tx,
+                            &ResponseStreamEvent::ResponseCreated {
+                                response: Box::new(make_response("in_progress", vec![], None)),
+                            },
+                        );
+                        *sent_initial = true;
+                    }
+                }
+                StreamEvent::ContentBlockStart {
+                    content_block,
+                    index: _,
+                } => match content_block {
                     crate::format::ContentBlock::Text { .. } => {
-                        if !message_added {
-                            // Add the message output item
+                        if !*message_added {
                             let msg_item = ResponseOutputItem::Message {
                                 id: format!("msg_{}", &request_id[..8.min(request_id.len())]),
                                 role: "assistant",
                                 status: "in_progress",
                                 content: vec![],
                             };
-                            emit_event(
-                                &mut output,
+                            emit(
+                                tx,
                                 &ResponseStreamEvent::OutputItemAdded {
-                                    output_index,
+                                    output_index: *output_index,
                                     item: msg_item,
                                 },
                             );
-
-                            // Add content part
                             let part = ResponseOutputContent::OutputText {
                                 text: String::new(),
                                 annotations: vec![],
                             };
-                            emit_event(
-                                &mut output,
+                            emit(
+                                tx,
                                 &ResponseStreamEvent::ContentPartAdded {
-                                    output_index,
+                                    output_index: *output_index,
                                     content_index,
                                     part,
                                 },
                             );
-                            message_added = true;
+                            *message_added = true;
                         }
                     }
                     crate::format::ContentBlock::ToolUse { id, name, .. } => {
-                        // Start tracking this tool call
-                        current_tool_id = id.clone();
-                        current_tool_name = name.clone();
+                        *current_tool_id = id.clone();
+                        *current_tool_name = name.clone();
                         current_tool_json.clear();
-
-                        // Emit function call added event
                         let fc_item = ResponseOutputItem::FunctionCall {
                             id: format!("fc_{}", id),
                             call_id: id.clone(),
@@ -1336,26 +1481,24 @@ async fn handle_responses_streaming(
                             arguments: String::new(),
                             status: "in_progress",
                         };
-                        emit_event(
-                            &mut output,
+                        emit(
+                            tx,
                             &ResponseStreamEvent::OutputItemAdded {
-                                output_index,
+                                output_index: *output_index,
                                 item: fc_item,
                             },
                         );
-                        output_index += 1;
+                        *output_index += 1;
                     }
                     _ => {}
-                }
-            }
-            StreamEvent::ContentBlockDelta { delta, .. } => {
-                match delta {
+                },
+                StreamEvent::ContentBlockDelta { delta, .. } => match delta {
                     crate::format::ContentDelta::Text { text } => {
                         text_content.push_str(text);
-                        emit_event(
-                            &mut output,
+                        emit(
+                            tx,
                             &ResponseStreamEvent::OutputTextDelta {
-                                output_index,
+                                output_index: *output_index,
                                 content_index,
                                 delta: text.clone(),
                             },
@@ -1363,180 +1506,198 @@ async fn handle_responses_streaming(
                     }
                     crate::format::ContentDelta::Thinking { thinking } => {
                         reasoning_content.push_str(thinking);
-                        reasoning_tokens += 1; // Approximate
+                        *reasoning_tokens += 1;
                     }
                     crate::format::ContentDelta::InputJson { partial_json } => {
-                        // Accumulate tool call arguments
                         current_tool_json.push_str(partial_json);
                     }
                     _ => {}
+                },
+                StreamEvent::ContentBlockStop { .. } => {
+                    if !current_tool_id.is_empty() {
+                        let fc_item = ResponseOutputItem::FunctionCall {
+                            id: format!("fc_{}", current_tool_id),
+                            call_id: current_tool_id.clone(),
+                            name: current_tool_name.clone(),
+                            arguments: current_tool_json.clone(),
+                            status: "completed",
+                        };
+                        emit(
+                            tx,
+                            &ResponseStreamEvent::OutputItemDone {
+                                output_index: output_index.saturating_sub(1),
+                                item: fc_item,
+                            },
+                        );
+                        tool_calls.push((
+                            std::mem::take(current_tool_id),
+                            std::mem::take(current_tool_name),
+                            std::mem::take(current_tool_json),
+                        ));
+                    }
                 }
-            }
-            StreamEvent::ContentBlockStop { .. } => {
-                // If we were building a tool call, finalize it
-                if !current_tool_id.is_empty() {
-                    debug!(
-                        request_id = %request_id,
-                        tool_id = %current_tool_id,
-                        tool_name = %current_tool_name,
-                        "Tool call finalized"
-                    );
-
-                    // Emit function call done event first (borrows current values)
-                    let fc_item = ResponseOutputItem::FunctionCall {
-                        id: format!("fc_{}", &current_tool_id),
-                        call_id: current_tool_id.clone(),
-                        name: current_tool_name.clone(),
-                        arguments: current_tool_json.clone(),
-                        status: "completed",
-                    };
-                    emit_event(
-                        &mut output,
-                        &ResponseStreamEvent::OutputItemDone {
-                            output_index: output_index.saturating_sub(1),
-                            item: fc_item,
-                        },
-                    );
-
-                    // Move values into tool_calls (no clone needed, take leaves empty strings)
-                    tool_calls.push((
-                        std::mem::take(&mut current_tool_id),
-                        std::mem::take(&mut current_tool_name),
-                        std::mem::take(&mut current_tool_json),
-                    ));
+                StreamEvent::MessageDelta { usage, .. } => {
+                    *output_tokens = usage.output_tokens;
                 }
+                _ => {}
             }
-            StreamEvent::MessageDelta { usage, .. } => {
-                output_tokens = usage.output_tokens;
+        };
+
+        let mut incoming = upstream.into_body();
+        loop {
+            use http_body_util::BodyExt;
+            match incoming.frame().await {
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data() {
+                        let chunk_str = String::from_utf8_lossy(&data);
+                        for event in parser.feed(&chunk_str) {
+                            process_event(
+                                &event,
+                                &tx,
+                                &mut input_tokens,
+                                &mut output_tokens,
+                                &mut cache_read_tokens,
+                                &mut reasoning_tokens,
+                                &mut text_content,
+                                &mut reasoning_content,
+                                &mut sent_initial,
+                                &mut message_added,
+                                &mut output_index,
+                                &mut tool_calls,
+                                &mut current_tool_json,
+                                &mut current_tool_id,
+                                &mut current_tool_name,
+                            );
+                        }
+                    }
+                }
+                Some(Err(e)) => {
+                    warn!(error = %e, "Error reading upstream for Responses streaming");
+                    break;
+                }
+                None => break,
             }
-            StreamEvent::MessageStop => {
-                // Message complete
-            }
-            _ => {}
         }
-    }
 
-    // Emit final events
-    if message_added {
-        // Text done
-        emit_event(
-            &mut output,
-            &ResponseStreamEvent::OutputTextDone {
-                output_index,
-                content_index,
+        for event in parser.finish() {
+            process_event(
+                &event,
+                &tx,
+                &mut input_tokens,
+                &mut output_tokens,
+                &mut cache_read_tokens,
+                &mut reasoning_tokens,
+                &mut text_content,
+                &mut reasoning_content,
+                &mut sent_initial,
+                &mut message_added,
+                &mut output_index,
+                &mut tool_calls,
+                &mut current_tool_json,
+                &mut current_tool_id,
+                &mut current_tool_name,
+            );
+        }
+
+        // ---- Emit final events ----
+        if message_added {
+            emit(
+                &tx,
+                &ResponseStreamEvent::OutputTextDone {
+                    output_index,
+                    content_index,
+                    text: text_content.clone(),
+                },
+            );
+            let part = ResponseOutputContent::OutputText {
                 text: text_content.clone(),
+                annotations: vec![],
+            };
+            emit(
+                &tx,
+                &ResponseStreamEvent::ContentPartDone {
+                    output_index,
+                    content_index,
+                    part: part.clone(),
+                },
+            );
+            let msg_item = ResponseOutputItem::Message {
+                id: format!("msg_{}", &request_id[..8.min(request_id.len())]),
+                role: "assistant",
+                status: "completed",
+                content: vec![part],
+            };
+            emit(
+                &tx,
+                &ResponseStreamEvent::OutputItemDone {
+                    output_index,
+                    item: msg_item,
+                },
+            );
+        }
+
+        let usage = Some(ResponseUsage {
+            input_tokens,
+            output_tokens,
+            total_tokens: input_tokens + output_tokens,
+            input_tokens_details: if cache_read_tokens > 0 {
+                Some(InputTokensDetails {
+                    cached_tokens: cache_read_tokens,
+                })
+            } else {
+                None
+            },
+            output_tokens_details: if reasoning_tokens > 0 {
+                Some(OutputTokensDetails { reasoning_tokens })
+            } else {
+                None
+            },
+        });
+
+        let mut final_output = vec![];
+        for (id, name, arguments) in tool_calls {
+            final_output.push(ResponseOutputItem::FunctionCall {
+                id: format!("fc_{}", &id),
+                call_id: id,
+                name,
+                arguments,
+                status: "completed",
+            });
+        }
+        if !reasoning_content.is_empty() {
+            final_output.push(ResponseOutputItem::Reasoning {
+                id: format!("rs_{}", &request_id[..8.min(request_id.len())]),
+                status: "completed",
+                summary: Some(vec![ResponseOutputContent::OutputText {
+                    text: reasoning_content,
+                    annotations: vec![],
+                }]),
+            });
+        }
+        if !text_content.is_empty() {
+            final_output.push(ResponseOutputItem::Message {
+                id: format!("msg_{}", &request_id[..8.min(request_id.len())]),
+                role: "assistant",
+                status: "completed",
+                content: vec![ResponseOutputContent::OutputText {
+                    text: text_content,
+                    annotations: vec![],
+                }],
+            });
+        }
+
+        get_stats().record_token_usage(&model, input_tokens, output_tokens, cache_read_tokens);
+
+        emit(
+            &tx,
+            &ResponseStreamEvent::ResponseCompleted {
+                response: Box::new(make_response("completed", final_output, usage)),
             },
         );
-
-        // Content part done — clone text_content for the streaming event,
-        // the original will be moved into final_output later
-        let part = ResponseOutputContent::OutputText {
-            text: text_content.clone(),
-            annotations: vec![],
-        };
-        emit_event(
-            &mut output,
-            &ResponseStreamEvent::ContentPartDone {
-                output_index,
-                content_index,
-                part: part.clone(),
-            },
-        );
-
-        // Output item done — move part and msg_item (no clones needed, not used after)
-        let msg_item = ResponseOutputItem::Message {
-            id: format!("msg_{}", &request_id[..8.min(request_id.len())]),
-            role: "assistant",
-            status: "completed",
-            content: vec![part],
-        };
-        emit_event(
-            &mut output,
-            &ResponseStreamEvent::OutputItemDone {
-                output_index,
-                item: msg_item,
-            },
-        );
-    }
-
-    // Build final usage
-    let usage = Some(ResponseUsage {
-        input_tokens,
-        output_tokens,
-        total_tokens: input_tokens + output_tokens,
-        input_tokens_details: if cache_read_tokens > 0 {
-            Some(InputTokensDetails {
-                cached_tokens: cache_read_tokens,
-            })
-        } else {
-            None
-        },
-        output_tokens_details: if reasoning_tokens > 0 {
-            Some(OutputTokensDetails { reasoning_tokens })
-        } else {
-            None
-        },
+        let _ = tx.send(Bytes::from("data: [DONE]\n\n")).await;
     });
 
-    // Log final output size for debugging
-    debug!(
-        request_id = %request_id,
-        output_len = output.len(),
-        text_len = text_content.len(),
-        tool_calls = tool_calls.len(),
-        "Responses streaming: sending response"
-    );
-
-    // Build final output
-    let mut final_output = vec![];
-
-    // Add tool calls first
-    for (id, name, arguments) in tool_calls {
-        final_output.push(ResponseOutputItem::FunctionCall {
-            id: format!("fc_{}", &id),
-            call_id: id,
-            name,
-            arguments,
-            status: "completed",
-        });
-    }
-
-    if !reasoning_content.is_empty() {
-        final_output.push(ResponseOutputItem::Reasoning {
-            id: format!("rs_{}", &request_id[..8.min(request_id.len())]),
-            status: "completed",
-            summary: Some(vec![ResponseOutputContent::OutputText {
-                text: reasoning_content,
-                annotations: vec![],
-            }]),
-        });
-    }
-    if !text_content.is_empty() {
-        final_output.push(ResponseOutputItem::Message {
-            id: format!("msg_{}", &request_id[..8.min(request_id.len())]),
-            role: "assistant",
-            status: "completed",
-            content: vec![ResponseOutputContent::OutputText {
-                text: text_content,
-                annotations: vec![],
-            }],
-        });
-    }
-
-    // Record token usage for stats
-    get_stats().record_token_usage(model, input_tokens, output_tokens, cache_read_tokens);
-
-    // Response completed
-    emit_event(
-        &mut output,
-        &ResponseStreamEvent::ResponseCompleted {
-            response: Box::new(make_response("completed", final_output, usage)),
-        },
-    );
-
-    output.push_str("data: [DONE]\n\n");
-
-    Ok(sse_ok_response(output, request_id))
+    Ok(response)
 }
 
 /// Error response format
@@ -1553,7 +1714,7 @@ fn error_response(
     message: &str,
     error_type: &str,
     format: ErrorFormat,
-) -> Response<Full<Bytes>> {
+) -> Response<ResponseBody> {
     let body = match format {
         ErrorFormat::OpenAI => serde_json::json!({
             "error": {
@@ -1576,7 +1737,7 @@ fn error_response(
     Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(body)))
+        .body(full_body(Full::new(Bytes::from(body))))
         .expect("Response construction with valid headers should not fail")
 }
 
@@ -1584,7 +1745,7 @@ fn responses_error_response(
     status: StatusCode,
     message: &str,
     error_type: &str,
-) -> Response<Full<Bytes>> {
+) -> Response<ResponseBody> {
     error_response(status, message, error_type, ErrorFormat::Responses)
 }
 
@@ -1592,7 +1753,7 @@ fn openai_error_response(
     status: StatusCode,
     message: &str,
     error_type: &str,
-) -> Response<Full<Bytes>> {
+) -> Response<ResponseBody> {
     error_response(status, message, error_type, ErrorFormat::OpenAI)
 }
 
@@ -1653,7 +1814,7 @@ fn validate_request(req: &MessagesRequest) -> Result<(), Error> {
     Ok(())
 }
 
-async fn read_body_limited(body: hyper::body::Incoming, max_size: usize) -> Result<Vec<u8>, Error> {
+async fn read_body_limited(body: hyper::body::Incoming, max_size: usize) -> Result<Bytes, Error> {
     let collected = body
         .collect()
         .await
@@ -1667,7 +1828,7 @@ async fn read_body_limited(body: hyper::body::Incoming, max_size: usize) -> Resu
         }));
     }
 
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 async fn handle_non_streaming_messages(
@@ -1678,7 +1839,7 @@ async fn handle_non_streaming_messages(
     request_id: &str,
     cache_key: Option<String>,
     state: &Arc<ServerState>,
-) -> Result<Response<Full<Bytes>>, Error> {
+) -> Result<Response<ResponseBody>, Error> {
     let response = client.send_request(body, access_token, model).await?;
     let anthropic_response = parse_response(&response, model, request_id);
     record_usage(model, &anthropic_response.usage);
@@ -1714,7 +1875,7 @@ async fn handle_thinking_non_streaming_messages(
     access_token: &str,
     model: &str,
     request_id: &str,
-) -> Result<Response<Full<Bytes>>, Error> {
+) -> Result<Response<ResponseBody>, Error> {
     let (events, body_bytes) = collect_sse_events(client, body, access_token, model).await?;
 
     // Log raw response for debugging empty/error responses
@@ -1776,90 +1937,139 @@ async fn handle_thinking_non_streaming_messages(
     Ok(json_ok_response(response_body, request_id, Some("BYPASS")))
 }
 
+/// Handle Anthropic streaming messages with true SSE pass-through.
+///
+/// Returns the response immediately with a channel-backed body.  A background
+/// task reads chunks from the upstream Google response, parses them with
+/// `SseParser`, and forwards each Anthropic-format SSE event through the
+/// channel as it arrives.
 async fn handle_streaming_messages(
     client: &CloudCodeClient,
     body: Bytes,
     access_token: &str,
     model: &str,
     request_id: &str,
-) -> Result<Response<Full<Bytes>>, Error> {
-    let (events, body_bytes) = collect_sse_events(client, body, access_token, model).await?;
-    let mut output = String::new();
+) -> Result<Response<ResponseBody>, Error> {
+    let upstream = client
+        .send_streaming_request(body, access_token, model)
+        .await?;
 
-    // Log raw response for debugging empty/error responses
-    if body_bytes.len() < 2000 {
-        let body_str = String::from_utf8_lossy(&body_bytes);
-        debug!(
-            model = %model,
-            request_id = %request_id,
-            body_len = body_bytes.len(),
-            body = %body_str,
-            "Raw SSE response from Google"
-        );
-    } else {
-        debug!(
-            model = %model,
-            request_id = %request_id,
-            body_len = body_bytes.len(),
-            "Raw SSE response from Google (truncated, too large to log)"
-        );
-    }
+    let (tx, body) = streaming_body();
 
-    check_stream_errors(&events, model, request_id, "")?;
+    let model = model.to_string();
+    let request_id_owned = request_id.to_string();
 
-    // Extract token counts from stream events for usage tracking
-    let mut input_tokens = 0u32;
-    let mut output_tokens = 0u32;
-    let mut cache_read_tokens = 0u32;
-    for event in &events {
-        match event {
-            StreamEvent::MessageStart { message } => {
-                input_tokens = message.usage.input_tokens;
-                cache_read_tokens = message.usage.cache_read_input_tokens.unwrap_or(0);
+    // Return the SSE response immediately; the background task will feed data.
+    let response = sse_streaming_response(body, request_id);
+
+    let request_id = request_id_owned;
+    tokio::spawn(async move {
+        let mut parser = SseParser::new(&model);
+        let mut input_tokens = 0u32;
+        let mut output_tokens = 0u32;
+        let mut cache_read_tokens = 0u32;
+        let mut has_content = false;
+        let mut body_len = 0usize;
+
+        let mut incoming = upstream.into_body();
+
+        // Read chunks from upstream as they arrive.
+        loop {
+            use http_body_util::BodyExt;
+            let frame = incoming.frame().await;
+            match frame {
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data() {
+                        body_len += data.len();
+                        let chunk_str = String::from_utf8_lossy(&data);
+
+                        for event in parser.feed(&chunk_str) {
+                            // Track tokens
+                            match &event {
+                                StreamEvent::MessageStart { message } => {
+                                    input_tokens = message.usage.input_tokens;
+                                    cache_read_tokens =
+                                        message.usage.cache_read_input_tokens.unwrap_or(0);
+                                }
+                                StreamEvent::MessageDelta { usage, .. } => {
+                                    output_tokens = usage.output_tokens;
+                                }
+                                StreamEvent::ContentBlockStart { .. }
+                                | StreamEvent::ContentBlockDelta { .. } => {
+                                    has_content = true;
+                                }
+                                StreamEvent::Error { error } => {
+                                    warn!(
+                                        model = %model,
+                                        request_id = %request_id,
+                                        error = %error.message,
+                                        "Google API error in SSE stream"
+                                    );
+                                }
+                                _ => {}
+                            }
+
+                            let formatted = format_sse_event(&event);
+                            if tx.send(Bytes::from(formatted)).await.is_err() {
+                                // Client disconnected
+                                return;
+                            }
+                        }
+                    }
+                }
+                Some(Err(e)) => {
+                    warn!(
+                        model = %model,
+                        request_id = %request_id,
+                        error = %e,
+                        "Error reading upstream SSE stream"
+                    );
+                    break;
+                }
+                None => break, // End of upstream stream
             }
-            StreamEvent::MessageDelta { usage, .. } => {
-                output_tokens = usage.output_tokens;
-            }
-            _ => {}
         }
-        output.push_str(&format_sse_event(event));
-    }
-    get_stats().record_token_usage(model, input_tokens, output_tokens, cache_read_tokens);
-    output.push_str(&format_sse_event(&create_message_stop()));
 
-    // Check if we got an empty response (no content events)
-    let has_content = events.iter().any(|e| {
-        matches!(
-            e,
-            StreamEvent::ContentBlockStart { .. } | StreamEvent::ContentBlockDelta { .. }
-        )
+        // Flush any remaining events from the parser.
+        for event in parser.finish() {
+            match &event {
+                StreamEvent::MessageStart { message } => {
+                    input_tokens = message.usage.input_tokens;
+                    cache_read_tokens = message.usage.cache_read_input_tokens.unwrap_or(0);
+                }
+                StreamEvent::MessageDelta { usage, .. } => {
+                    output_tokens = usage.output_tokens;
+                }
+                StreamEvent::ContentBlockStart { .. } | StreamEvent::ContentBlockDelta { .. } => {
+                    has_content = true;
+                }
+                _ => {}
+            }
+            let formatted = format_sse_event(&event);
+            let _ = tx.send(Bytes::from(formatted)).await;
+        }
+
+        // Send final message_stop event.
+        let stop_event = format_sse_event(&create_message_stop());
+        let _ = tx.send(Bytes::from(stop_event)).await;
+
+        // Record token usage.
+        get_stats().record_token_usage(&model, input_tokens, output_tokens, cache_read_tokens);
+
+        if !has_content && body_len > 0 {
+            warn!(
+                model = %model,
+                request_id = %request_id,
+                body_len = body_len,
+                "Empty response from Google API (streaming) - model may be unavailable"
+            );
+        }
     });
 
-    if !has_content && !body_bytes.is_empty() {
-        let body_str = String::from_utf8_lossy(&body_bytes);
-        warn!(
-            model = %model,
-            request_id = %request_id,
-            body_len = body_bytes.len(),
-            "Empty response from Google API - model may be unavailable. Raw body: {}",
-            body_str.chars().take(500).collect::<String>()
-        );
-
-        // Return an error instead of an empty SSE stream
-        return Err(Error::Api(ApiError::ServerError {
-            status: 502,
-            message: format!(
-                "Model {} returned empty response from Google API. The model may be unavailable. Raw: {}",
-                model,
-                body_str.chars().take(200).collect::<String>()
-            ),
-        }));
-    }
-
-    Ok(sse_ok_response(output, request_id))
+    Ok(response)
 }
 
-async fn handle_models() -> Result<Response<Full<Bytes>>, Error> {
+async fn handle_models() -> Result<Response<ResponseBody>, Error> {
     let models: Vec<ModelInfo> = Model::all()
         .iter()
         .map(|m| ModelInfo {
@@ -1876,11 +2086,11 @@ async fn handle_models() -> Result<Response<Full<Bytes>>, Error> {
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(body)))
+        .body(full_body(Full::new(Bytes::from(body))))
         .unwrap())
 }
 
-async fn handle_stats(state: &Arc<ServerState>) -> Result<Response<Full<Bytes>>, Error> {
+async fn handle_stats(state: &Arc<ServerState>) -> Result<Response<ResponseBody>, Error> {
     let stats = get_stats().summary();
     let cache_stats = state.cache.lock().await.stats();
 
@@ -1892,11 +2102,11 @@ async fn handle_stats(state: &Arc<ServerState>) -> Result<Response<Full<Bytes>>,
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(response.to_string())))
+        .body(full_body(Full::new(Bytes::from(response.to_string()))))
         .unwrap())
 }
 
-async fn handle_account_limits(state: &Arc<ServerState>) -> Result<Response<Full<Bytes>>, Error> {
+async fn handle_account_limits(state: &Arc<ServerState>) -> Result<Response<ResponseBody>, Error> {
     // Get credentials using the existing pattern
     let credentials = get_account_credentials(state, "claude-sonnet-4-5").await;
 
@@ -1967,11 +2177,11 @@ async fn handle_account_limits(state: &Arc<ServerState>) -> Result<Response<Full
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(response.to_string())))
+        .body(full_body(Full::new(Bytes::from(response.to_string()))))
         .unwrap())
 }
 
-async fn handle_logs_stream() -> Result<Response<Full<Bytes>>, Error> {
+async fn handle_logs_stream() -> Result<Response<ResponseBody>, Error> {
     // Get the log file path
     let config_dir = std::env::var_os("HOME")
         .map(|h| std::path::PathBuf::from(h).join(".config").join("agcp"))
@@ -2033,7 +2243,7 @@ async fn handle_logs_stream() -> Result<Response<Full<Bytes>>, Error> {
         .header("Content-Type", "text/event-stream")
         .header("Cache-Control", "no-cache")
         .header("Connection", "keep-alive")
-        .body(Full::new(Bytes::from(body)))
+        .body(full_body(Full::new(Bytes::from(body))))
         .unwrap())
 }
 
@@ -2143,11 +2353,11 @@ fn check_stream_errors(
     Ok(())
 }
 
-fn json_response(status: StatusCode, body: &str) -> Response<Full<Bytes>> {
+fn json_response(status: StatusCode, body: &str) -> Response<ResponseBody> {
     Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(body.to_string())))
+        .body(full_body(Full::new(Bytes::from(body.to_string()))))
         .unwrap()
 }
 
@@ -2165,7 +2375,7 @@ fn json_ok_response(
     body: impl Into<Bytes>,
     request_id: &str,
     cache: Option<&str>,
-) -> Response<Full<Bytes>> {
+) -> Response<ResponseBody> {
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
@@ -2175,11 +2385,11 @@ fn json_ok_response(
         builder = builder.header("X-Cache", cache_status);
     }
 
-    builder.body(Full::new(body.into())).unwrap()
+    builder.body(full_body(Full::new(body.into()))).unwrap()
 }
 
-/// Build an SSE streaming response with standard headers.
-fn sse_ok_response(body: String, request_id: &str) -> Response<Full<Bytes>> {
+/// Build a true SSE streaming response backed by a channel body.
+fn sse_streaming_response(body: ResponseBody, request_id: &str) -> Response<ResponseBody> {
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "text/event-stream")
@@ -2187,11 +2397,25 @@ fn sse_ok_response(body: String, request_id: &str) -> Response<Full<Bytes>> {
         .header("Connection", "keep-alive")
         .header("X-Request-Id", request_id)
         .header("X-Cache", "BYPASS")
-        .body(Full::new(Bytes::from(body)))
+        .body(body)
         .unwrap()
 }
 
-fn error_to_response(error: &Error, request_id: &str) -> Response<Full<Bytes>> {
+/// Build a buffered SSE response with standard headers (used for non-true-streaming paths).
+#[allow(dead_code)]
+fn sse_ok_response(body: String, request_id: &str) -> Response<ResponseBody> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .header("X-Request-Id", request_id)
+        .header("X-Cache", "BYPASS")
+        .body(full_body(Full::new(Bytes::from(body))))
+        .unwrap()
+}
+
+fn error_to_response(error: &Error, request_id: &str) -> Response<ResponseBody> {
     let (status, error_type, message) = match error {
         Error::Auth(AuthError::TokenExpired) => (
             StatusCode::UNAUTHORIZED,
@@ -2277,7 +2501,7 @@ fn error_to_response(error: &Error, request_id: &str) -> Response<Full<Bytes>> {
         .status(status)
         .header("Content-Type", "application/json")
         .header("X-Request-Id", request_id)
-        .body(Full::new(Bytes::from(body)))
+        .body(full_body(Full::new(Bytes::from(body))))
         .unwrap()
 }
 

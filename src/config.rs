@@ -206,10 +206,10 @@ pub struct CloudCodeConfig {
     /// Maximum retry attempts for failed requests (default: 5)
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
-    /// Maximum concurrent requests to Cloud Code API (default: 1)
+    /// Maximum concurrent requests to Cloud Code API (default: 10)
     #[serde(default = "default_max_concurrent")]
     pub max_concurrent_requests: usize,
-    /// Minimum interval between requests in milliseconds (default: 500)
+    /// Minimum interval between requests in milliseconds (default: 50)
     #[serde(default = "default_min_request_interval")]
     pub min_request_interval_ms: u64,
 }
@@ -223,11 +223,11 @@ fn default_max_retries() -> u32 {
 }
 
 fn default_max_concurrent() -> usize {
-    1
+    10
 }
 
 fn default_min_request_interval() -> u64 {
-    500
+    50
 }
 
 impl Default for CloudCodeConfig {
