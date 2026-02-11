@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.2.3] - 2026-02-11
+
+
+### Bug Fixes
+
+- Persist daemon address so TUI and CLI detect non-default ports ([a3a75e3](https://github.com/skyline69/agcp/commit/a3a75e3df36ad35564d5d67f272a6c1da4dcc79f)) — Ö. Efe D.
+- Gate write_addr with #[cfg(unix)] to fix Windows build ([cb196ba](https://github.com/skyline69/agcp/commit/cb196baaa391a3c6eb9bf308f4691a4c09627db5)) — Ö. Efe D.
+- Setup now uses daemon's actual port for tool configuration ([2499173](https://github.com/skyline69/agcp/commit/2499173d4adbb33f6aab2c42e28c7dd3d1392bd5)) — Ö. Efe D.
+
+
+### Miscellaneous
+
+- Update dependencies ([483acf3](https://github.com/skyline69/agcp/commit/483acf381a65405ae15aad07adf97aeab6d589a6)) — Ö. Efe D.
+- Update version ([9a47cae](https://github.com/skyline69/agcp/commit/9a47caef9330eeecfbc9b695a60bb6a514682ede)) — Ö. Efe D.
+
+
 ## [v1.2.2] - 2026-02-10
 
 
