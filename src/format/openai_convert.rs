@@ -173,7 +173,10 @@ pub fn openai_to_anthropic(request: &ChatCompletionRequest) -> MessagesRequest {
                     None => Some(SystemPrompt::Text(json_instruction.to_string())),
                     other => other,
                 };
-                (sys, Some(crate::format::anthropic::ResponseFormatInternal::JsonObject))
+                (
+                    sys,
+                    Some(crate::format::anthropic::ResponseFormatInternal::JsonObject),
+                )
             }
             "json_schema" => {
                 // Extract schema from json_schema field
@@ -182,7 +185,12 @@ pub fn openai_to_anthropic(request: &ChatCompletionRequest) -> MessagesRequest {
                     js.get("schema").cloned().or_else(|| Some(js.clone()))
                 });
                 if let Some(schema) = schema {
-                    (system, Some(crate::format::anthropic::ResponseFormatInternal::JsonSchema { schema }))
+                    (
+                        system,
+                        Some(
+                            crate::format::anthropic::ResponseFormatInternal::JsonSchema { schema },
+                        ),
+                    )
                 } else {
                     // No schema provided, fall back to json_object behavior
                     let json_instruction =
@@ -195,7 +203,10 @@ pub fn openai_to_anthropic(request: &ChatCompletionRequest) -> MessagesRequest {
                         None => Some(SystemPrompt::Text(json_instruction.to_string())),
                         other => other,
                     };
-                    (sys, Some(crate::format::anthropic::ResponseFormatInternal::JsonObject))
+                    (
+                        sys,
+                        Some(crate::format::anthropic::ResponseFormatInternal::JsonObject),
+                    )
                 }
             }
             _ => (system, None),

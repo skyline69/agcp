@@ -201,12 +201,12 @@ impl Stats {
             // Restore token counters
             let mut counters = self.token_counters.write();
             for (model, tc) in persistent.tokens {
-                let entry = counters
-                    .entry(model)
-                    .or_insert_with(TokenCounters::new);
+                let entry = counters.entry(model).or_insert_with(TokenCounters::new);
                 entry.input_tokens.fetch_add(tc.input, Ordering::Relaxed);
                 entry.output_tokens.fetch_add(tc.output, Ordering::Relaxed);
-                entry.cache_read_tokens.fetch_add(tc.cache_read, Ordering::Relaxed);
+                entry
+                    .cache_read_tokens
+                    .fetch_add(tc.cache_read, Ordering::Relaxed);
             }
         }
     }

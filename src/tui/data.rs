@@ -602,6 +602,9 @@ pub struct TokenHistory {
     /// server restart so we can still detect drops when the model reappears.
     #[serde(default)]
     peak_values: std::collections::HashMap<String, u64>,
+    /// Unix timestamp when this TUI session started (not persisted).
+    #[serde(skip)]
+    session_start: Option<u64>,
 }
 
 impl Default for TokenHistory {
@@ -617,6 +620,7 @@ impl TokenHistory {
             period_start: None,
             offsets: std::collections::HashMap::new(),
             peak_values: std::collections::HashMap::new(),
+            session_start: None,
         }
     }
 
@@ -649,6 +653,13 @@ impl TokenHistory {
                         .unwrap_or(false)
                 })
         });
+
+        history.session_start = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
 
         history
     }
@@ -788,18 +799,31 @@ impl TokenHistory {
 
     /// Get per-model cumulative data for the chart.
     /// Returns Vec of (model_name, Vec<(x, y)>) where:
-    /// - x = minutes since the first snapshot
+    /// - x = minutes since session start
     /// - y = cumulative total tokens
+    ///
+    /// Only includes snapshots from the current session. The last snapshot
+    /// before session start is included as a baseline at x=0 so lines begin
+    /// at the correct cumulative Y value.
     pub fn get_cumulative_series(&self) -> Vec<(String, Vec<(f64, f64)>)> {
         if self.snapshots.is_empty() {
             return Vec::new();
         }
 
-        let time_origin = self.snapshots[0].timestamp;
+        let origin = self.session_start.unwrap_or(self.snapshots[0].timestamp);
 
-        // Collect all unique model names
+        // Find the baseline: last snapshot at or before session start, or 0
+        let start_idx = self
+            .snapshots
+            .iter()
+            .rposition(|s| s.timestamp <= origin)
+            .unwrap_or(0);
+
+        let session_snapshots = &self.snapshots[start_idx..];
+
+        // Collect all unique model names from session snapshots
         let mut model_names: Vec<String> = Vec::new();
-        for snap in &self.snapshots {
+        for snap in session_snapshots {
             for (name, _) in &snap.models {
                 if !model_names.contains(name) {
                     model_names.push(name.clone());
@@ -810,8 +834,9 @@ impl TokenHistory {
         let mut result = Vec::new();
         for model_name in &model_names {
             let mut points = Vec::new();
-            for snap in &self.snapshots {
-                let x = (snap.timestamp.saturating_sub(time_origin)) as f64 / 60.0; // minutes
+            for snap in session_snapshots {
+                // Clamp to 0 so the baseline snapshot sits at x=0
+                let x = (snap.timestamp.saturating_sub(origin)) as f64 / 60.0;
                 let y = snap
                     .models
                     .iter()
@@ -828,20 +853,18 @@ impl TokenHistory {
         result
     }
 
-    /// Get the time range in minutes for the X axis
+    /// Get the time range in minutes for the X axis.
+    /// Scoped to the current TUI session so the chart doesn't stretch across
+    /// days of persisted history.
     pub fn get_time_range_minutes(&self) -> f64 {
-        if self.snapshots.is_empty() {
-            return 60.0; // Default 1 hour
-        }
-
-        let time_origin = self.snapshots[0].timestamp;
-
+        let origin = self
+            .session_start
+            .unwrap_or_else(|| self.snapshots.first().map(|s| s.timestamp).unwrap_or(0));
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-
-        let range = (now.saturating_sub(time_origin)) as f64 / 60.0;
-        range.max(1.0) // At least 1 minute to avoid zero-width axis
+        let range = (now.saturating_sub(origin)) as f64 / 60.0;
+        range.max(1.0)
     }
 }

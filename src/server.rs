@@ -197,14 +197,10 @@ async fn handle_request(
             }
 
             // OpenAI Responses API (used by Codex CLI)
-            (Method::POST, "/v1/responses") => {
-                handle_responses(req, state, &request_id).await
-            }
+            (Method::POST, "/v1/responses") => handle_responses(req, state, &request_id).await,
 
             // Token counting API — estimates token count using chars/4 heuristic
-            (Method::POST, "/v1/messages/count_tokens") => {
-                handle_count_tokens(req).await
-            }
+            (Method::POST, "/v1/messages/count_tokens") => handle_count_tokens(req).await,
 
             // Event logging batch (Claude Code sends these - acknowledge silently)
             (Method::POST, "/api/event_logging/batch") => {
@@ -212,9 +208,7 @@ async fn handle_request(
             }
 
             // Claude Code heartbeat/event requests to root
-            (Method::POST, "/") => {
-                Ok(json_response(StatusCode::OK, r#"{"status":"ok"}"#))
-            }
+            (Method::POST, "/") => Ok(json_response(StatusCode::OK, r#"{"status":"ok"}"#)),
 
             // Models API
             (Method::GET, "/v1/models") => handle_models().await,
