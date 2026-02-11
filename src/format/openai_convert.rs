@@ -158,24 +158,50 @@ pub fn openai_to_anthropic(request: &ChatCompletionRequest) -> MessagesRequest {
         }
     });
 
-    // Handle response_format: inject JSON instruction into system prompt if JSON mode requested
-    let system = if let Some(ref fmt) = request.response_format {
-        if fmt.format_type == "json_object" {
-            let json_instruction =
-                "You must respond with valid JSON. Output only JSON, no other text.";
-            match system {
-                Some(SystemPrompt::Text(existing)) => Some(SystemPrompt::Text(format!(
-                    "{}\n\n{}",
-                    existing, json_instruction
-                ))),
-                None => Some(SystemPrompt::Text(json_instruction.to_string())),
-                other => other,
+    // Handle response_format: inject JSON instruction for json_object,
+    // or pass through schema for json_schema (native Google API support)
+    let (system, response_format) = if let Some(ref fmt) = request.response_format {
+        match fmt.format_type.as_str() {
+            "json_object" => {
+                let json_instruction =
+                    "You must respond with valid JSON. Output only JSON, no other text.";
+                let sys = match system {
+                    Some(SystemPrompt::Text(existing)) => Some(SystemPrompt::Text(format!(
+                        "{}\n\n{}",
+                        existing, json_instruction
+                    ))),
+                    None => Some(SystemPrompt::Text(json_instruction.to_string())),
+                    other => other,
+                };
+                (sys, Some(crate::format::anthropic::ResponseFormatInternal::JsonObject))
             }
-        } else {
-            system
+            "json_schema" => {
+                // Extract schema from json_schema field
+                let schema = fmt.json_schema.as_ref().and_then(|js| {
+                    // OpenAI format: {"name": "...", "schema": {...}}
+                    js.get("schema").cloned().or_else(|| Some(js.clone()))
+                });
+                if let Some(schema) = schema {
+                    (system, Some(crate::format::anthropic::ResponseFormatInternal::JsonSchema { schema }))
+                } else {
+                    // No schema provided, fall back to json_object behavior
+                    let json_instruction =
+                        "You must respond with valid JSON. Output only JSON, no other text.";
+                    let sys = match system {
+                        Some(SystemPrompt::Text(existing)) => Some(SystemPrompt::Text(format!(
+                            "{}\n\n{}",
+                            existing, json_instruction
+                        ))),
+                        None => Some(SystemPrompt::Text(json_instruction.to_string())),
+                        other => other,
+                    };
+                    (sys, Some(crate::format::anthropic::ResponseFormatInternal::JsonObject))
+                }
+            }
+            _ => (system, None),
         }
     } else {
-        system
+        (system, None)
     };
 
     MessagesRequest {
@@ -191,6 +217,8 @@ pub fn openai_to_anthropic(request: &ChatCompletionRequest) -> MessagesRequest {
         tools,
         tool_choice,
         thinking: None,
+        response_format,
+        candidate_count: request.n.filter(|&n| n > 1),
     }
 }
 

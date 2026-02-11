@@ -131,7 +131,14 @@ async fn handle_request(
 ) -> Result<Response<ResponseBody>, hyper::Error> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
-    let request_id = generate_request_id();
+
+    // Use client-provided X-Request-ID if present, otherwise generate one
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(generate_request_id);
 
     debug!(
         method = %method,
@@ -194,11 +201,10 @@ async fn handle_request(
                 handle_responses(req, state, &request_id).await
             }
 
-            // Token counting API (not implemented - matches JS proxy behavior)
-            (Method::POST, "/v1/messages/count_tokens") => Ok(json_response(
-                StatusCode::NOT_IMPLEMENTED,
-                r#"{"type":"error","error":{"type":"not_implemented","message":"Token counting is not implemented. Use /v1/messages with max_tokens or configure your client to skip token counting."}}"#,
-            )),
+            // Token counting API — estimates token count using chars/4 heuristic
+            (Method::POST, "/v1/messages/count_tokens") => {
+                handle_count_tokens(req).await
+            }
 
             // Event logging batch (Claude Code sends these - acknowledge silently)
             (Method::POST, "/api/event_logging/batch") => {
@@ -2221,6 +2227,98 @@ async fn handle_models() -> Result<Response<ResponseBody>, Error> {
         .unwrap())
 }
 
+/// Estimate token count for a messages request.
+///
+/// Uses a chars/4 heuristic which is a reasonable approximation for most
+/// tokenizers (GPT, Claude, Gemini all average ~3.5-4.5 chars per token
+/// for English text). This avoids requiring a full tokenizer dependency.
+async fn handle_count_tokens(
+    req: Request<hyper::body::Incoming>,
+) -> Result<Response<ResponseBody>, Error> {
+    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+
+    #[derive(serde::Deserialize)]
+    struct CountTokensRequest {
+        messages: Vec<crate::format::anthropic::Message>,
+        #[serde(default)]
+        system: Option<crate::format::anthropic::SystemPrompt>,
+        #[serde(default)]
+        tools: Option<Vec<crate::format::anthropic::Tool>>,
+    }
+
+    let request: CountTokensRequest = serde_json::from_slice(&body_bytes)?;
+
+    let mut total_chars: usize = 0;
+
+    // Count system prompt chars
+    if let Some(system) = &request.system {
+        match system {
+            crate::format::anthropic::SystemPrompt::Text(text) => {
+                total_chars += text.len();
+            }
+            crate::format::anthropic::SystemPrompt::Blocks(blocks) => {
+                for block in blocks {
+                    total_chars += count_block_chars(block);
+                }
+            }
+        }
+    }
+
+    // Count message chars
+    for msg in &request.messages {
+        match &msg.content {
+            crate::format::anthropic::MessageContent::Text(text) => {
+                total_chars += text.len();
+            }
+            crate::format::anthropic::MessageContent::Blocks(blocks) => {
+                for block in blocks {
+                    total_chars += count_block_chars(block);
+                }
+            }
+        }
+    }
+
+    // Count tool definitions
+    if let Some(tools) = &request.tools {
+        for tool in tools {
+            total_chars += tool.name.len();
+            if let Some(desc) = &tool.description {
+                total_chars += desc.len();
+            }
+            total_chars += tool.input_schema.to_string().len();
+        }
+    }
+
+    // Estimate: ~4 chars per token, with a minimum of 1
+    let input_tokens = (total_chars / 4).max(1) as u32;
+
+    let response = serde_json::json!({
+        "input_tokens": input_tokens,
+    });
+
+    let response_body = serde_json::to_vec(&response)?;
+    Ok(json_ok_response(response_body, "count_tokens", None))
+}
+
+/// Count approximate character length of a content block.
+fn count_block_chars(block: &crate::format::ContentBlock) -> usize {
+    match block {
+        crate::format::ContentBlock::Text { text, .. } => text.len(),
+        crate::format::ContentBlock::Image { .. } => 256, // Images counted as ~64 tokens
+        crate::format::ContentBlock::Document { .. } => 1024, // PDFs counted as ~256 tokens
+        crate::format::ContentBlock::ToolUse { name, input, .. } => {
+            name.len() + input.to_string().len()
+        }
+        crate::format::ContentBlock::ToolResult { content, .. } => match content {
+            crate::format::anthropic::ToolResultContent::Text(text) => text.len(),
+            crate::format::anthropic::ToolResultContent::Blocks(blocks) => {
+                blocks.iter().map(count_block_chars).sum()
+            }
+        },
+        crate::format::ContentBlock::Thinking { thinking, .. } => thinking.len(),
+    }
+}
+
 async fn handle_stats(state: &Arc<ServerState>) -> Result<Response<ResponseBody>, Error> {
     let stats = get_stats().summary();
     let cache_stats = state.cache.lock().await.stats();
@@ -2776,18 +2874,20 @@ mod tests {
         assert!(body.contains("not_found"), "body: {body}");
     }
 
-    // -- Token counting (not implemented) --
+    // -- Token counting --
 
     #[tokio::test]
-    async fn test_count_tokens_not_implemented() {
+    async fn test_count_tokens() {
         let addr = spawn_test_server().await;
-        let (status, body) = http_request(
-            addr,
-            "POST /v1/messages/count_tokens HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}",
-        )
-        .await;
-        assert_eq!(status, 501, "body: {body}");
-        assert!(body.contains("not_implemented"), "body: {body}");
+        let payload = r#"{"messages":[{"role":"user","content":"Hello, world!"}]}"#;
+        let req = format!(
+            "POST /v1/messages/count_tokens HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(body.contains("input_tokens"), "body: {body}");
     }
 
     // -- Event logging batch --

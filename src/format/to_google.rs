@@ -7,8 +7,8 @@ use crate::format::google::{
     InlineData, InlineDataPart, Part, TextPart, ThinkingConfig, ThoughtPart, ToolConfig,
 };
 use crate::format::signature_cache::{
-    GEMINI_SKIP_SIGNATURE, MIN_SIGNATURE_LENGTH, ModelFamily, get_cached_tool_signature,
-    is_signature_compatible,
+    get_cached_tool_signature, is_signature_compatible, ModelFamily, GEMINI_SKIP_SIGNATURE,
+    MIN_SIGNATURE_LENGTH,
 };
 use crate::models::{get_model_family, is_thinking_model};
 
@@ -93,6 +93,22 @@ pub fn convert_request(request: &MessagesRequest) -> GenerateContentRequest {
         top_k,
         stop_sequences: request.stop_sequences.clone(),
         thinking_config,
+        response_mime_type: match &request.response_format {
+            Some(crate::format::anthropic::ResponseFormatInternal::JsonObject) => {
+                Some("application/json".to_string())
+            }
+            Some(crate::format::anthropic::ResponseFormatInternal::JsonSchema { .. }) => {
+                Some("application/json".to_string())
+            }
+            None => None,
+        },
+        response_schema: match &request.response_format {
+            Some(crate::format::anthropic::ResponseFormatInternal::JsonSchema { schema }) => {
+                Some(sanitize_schema(schema))
+            }
+            _ => None,
+        },
+        candidate_count: request.candidate_count,
     });
 
     let tools = request.tools.as_ref().and_then(|t| {
@@ -145,6 +161,12 @@ fn convert_content_block(block: &ContentBlock, target_family: Option<ModelFamily
     match block {
         ContentBlock::Text { text, .. } => Some(Part::Text(TextPart { text: text.clone() })),
         ContentBlock::Image { source } => Some(Part::InlineData(InlineDataPart {
+            inline_data: InlineData {
+                mime_type: source.media_type.clone(),
+                data: source.data.clone(),
+            },
+        })),
+        ContentBlock::Document { source, .. } => Some(Part::InlineData(InlineDataPart {
             inline_data: InlineData {
                 mime_type: source.media_type.clone(),
                 data: source.data.clone(),
@@ -468,6 +490,8 @@ mod tests {
             tools: None,
             tool_choice: None,
             thinking: None,
+            response_format: None,
+            candidate_count: None,
         }
     }
 

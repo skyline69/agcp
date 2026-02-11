@@ -1,4 +1,5 @@
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -15,6 +16,26 @@ static STATS: std::sync::LazyLock<Stats> = std::sync::LazyLock::new(Stats::new);
 /// Get the global stats instance
 pub fn get_stats() -> &'static Stats {
     &STATS
+}
+
+/// Path to the persistent stats file.
+fn stats_path() -> std::path::PathBuf {
+    crate::config::Config::dir().join("stats.json")
+}
+
+/// Persistent stats data saved to disk.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistentStats {
+    requests: HashMap<String, u64>,
+    endpoint_requests: HashMap<String, u64>,
+    tokens: HashMap<String, PersistentTokenCounters>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistentTokenCounters {
+    input: u64,
+    output: u64,
+    cache_read: u64,
 }
 
 /// Per-model token counters (atomic for lock-free reads)
@@ -139,13 +160,101 @@ impl RateHistory {
 
 impl Stats {
     fn new() -> Self {
-        Self {
+        let stats = Self {
             requests: RwLock::new(HashMap::new()),
             start_time: Instant::now(),
             endpoint_requests: RwLock::new(HashMap::new()),
             rate_history: RwLock::new(RateHistory::new()),
             token_counters: RwLock::new(HashMap::new()),
             token_events: RwLock::new(VecDeque::with_capacity(MAX_TOKEN_EVENTS)),
+        };
+        stats.load_persistent();
+        stats
+    }
+
+    /// Load persistent stats from disk, merging into current counters.
+    fn load_persistent(&self) {
+        let path = stats_path();
+        if let Ok(data) = std::fs::read_to_string(&path)
+            && let Ok(persistent) = serde_json::from_str::<PersistentStats>(&data)
+        {
+            // Restore request counters
+            let mut requests = self.requests.write();
+            for (model, count) in persistent.requests {
+                requests
+                    .entry(model)
+                    .or_insert_with(|| AtomicU64::new(0))
+                    .fetch_add(count, Ordering::Relaxed);
+            }
+            drop(requests);
+
+            // Restore endpoint counters
+            let mut endpoints = self.endpoint_requests.write();
+            for (endpoint, count) in persistent.endpoint_requests {
+                endpoints
+                    .entry(endpoint)
+                    .or_insert_with(|| AtomicU64::new(0))
+                    .fetch_add(count, Ordering::Relaxed);
+            }
+            drop(endpoints);
+
+            // Restore token counters
+            let mut counters = self.token_counters.write();
+            for (model, tc) in persistent.tokens {
+                let entry = counters
+                    .entry(model)
+                    .or_insert_with(TokenCounters::new);
+                entry.input_tokens.fetch_add(tc.input, Ordering::Relaxed);
+                entry.output_tokens.fetch_add(tc.output, Ordering::Relaxed);
+                entry.cache_read_tokens.fetch_add(tc.cache_read, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Save current cumulative stats to disk.
+    pub fn save_persistent(&self) {
+        let requests: HashMap<String, u64> = self
+            .requests
+            .read()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
+            .collect();
+
+        let endpoint_requests: HashMap<String, u64> = self
+            .endpoint_requests
+            .read()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.load(Ordering::Relaxed)))
+            .collect();
+
+        let tokens: HashMap<String, PersistentTokenCounters> = self
+            .token_counters
+            .read()
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    PersistentTokenCounters {
+                        input: v.input_tokens.load(Ordering::Relaxed),
+                        output: v.output_tokens.load(Ordering::Relaxed),
+                        cache_read: v.cache_read_tokens.load(Ordering::Relaxed),
+                    },
+                )
+            })
+            .collect();
+
+        let persistent = PersistentStats {
+            requests,
+            endpoint_requests,
+            tokens,
+        };
+
+        let path = stats_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(data) = serde_json::to_string_pretty(&persistent) {
+            let _ = std::fs::write(&path, data);
         }
     }
 
@@ -157,6 +266,12 @@ impl Stats {
         // Update rate history
         let now_secs = self.start_time.elapsed().as_secs();
         self.rate_history.write().record(now_secs);
+
+        // Periodically save stats to disk (every 50 requests)
+        let total = self.sum_map(&self.requests);
+        if total.is_multiple_of(50) {
+            self.save_persistent();
+        }
     }
 
     /// Record token usage for a completed request

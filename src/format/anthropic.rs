@@ -23,6 +23,20 @@ pub struct MessagesRequest {
     pub tool_choice: Option<ToolChoice>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingConfig>,
+    /// Internal: structured output schema to pass through to Google.
+    /// Not part of Anthropic's public API, used for OpenAI json_schema forwarding.
+    #[serde(skip)]
+    pub response_format: Option<ResponseFormatInternal>,
+    /// Internal: number of candidates to generate (for OpenAI n parameter).
+    #[serde(skip)]
+    pub candidate_count: Option<u32>,
+}
+
+/// Internal response format for passing structured output config to Google.
+#[derive(Debug, Clone)]
+pub enum ResponseFormatInternal {
+    JsonObject,
+    JsonSchema { schema: serde_json::Value },
 }
 
 /// Client-provided thinking configuration.
@@ -82,6 +96,11 @@ pub enum ContentBlock {
     Image {
         source: ImageSource,
     },
+    Document {
+        source: DocumentSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<serde_json::Value>,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -102,6 +121,14 @@ pub enum ContentBlock {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageSource {
+    #[serde(rename = "type")]
+    pub source_type: String,
+    pub media_type: String,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentSource {
     #[serde(rename = "type")]
     pub source_type: String,
     pub media_type: String,

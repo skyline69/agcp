@@ -172,6 +172,8 @@ pub fn responses_to_anthropic(request: &ResponsesRequest) -> MessagesRequest {
         tools,
         tool_choice: None,
         thinking: None,
+        response_format: None,
+        candidate_count: None,
     }
 }
 
