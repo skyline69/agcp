@@ -172,6 +172,7 @@ mod tests {
                 cached_content_token_count: 0,
             }),
             error: None,
+            prompt_feedback: None,
         }
     }
 
@@ -226,6 +227,7 @@ mod tests {
                 cached_content_token_count: 800,
             }),
             error: None,
+            prompt_feedback: None,
         };
 
         let result = convert_response(&response, "test", "req_cache");
@@ -242,6 +244,7 @@ mod tests {
             candidates: None,
             usage_metadata: None,
             error: None,
+            prompt_feedback: None,
         };
 
         let result = convert_response(&response, "test", "req_empty");

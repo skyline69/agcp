@@ -7,8 +7,8 @@ use crate::format::google::{
     InlineData, InlineDataPart, Part, TextPart, ThinkingConfig, ThoughtPart, ToolConfig,
 };
 use crate::format::signature_cache::{
-    get_cached_tool_signature, is_signature_compatible, ModelFamily, GEMINI_SKIP_SIGNATURE,
-    MIN_SIGNATURE_LENGTH,
+    GEMINI_SKIP_SIGNATURE, MIN_SIGNATURE_LENGTH, ModelFamily, get_cached_tool_signature,
+    is_signature_compatible,
 };
 use crate::models::{get_model_family, is_thinking_model};
 

@@ -159,6 +159,17 @@ pub struct GenerateContentResponse {
     pub usage_metadata: Option<UsageMetadata>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<GoogleError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_feedback: Option<PromptFeedback>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptFeedback {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safety_ratings: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

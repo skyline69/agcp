@@ -18,6 +18,7 @@ pub struct SseParser {
     output_tokens: u32,
     cache_read_tokens: u32,
     stop_reason: Option<String>,
+    last_raw_data: String,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -41,6 +42,7 @@ impl SseParser {
             output_tokens: 0,
             cache_read_tokens: 0,
             stop_reason: None,
+            last_raw_data: String::new(),
         }
     }
 
@@ -93,18 +95,55 @@ impl SseParser {
             return Some(vec![create_message_stop()]);
         }
 
+        // Store raw data for diagnostic logging
+        self.last_raw_data.clear();
+        self.last_raw_data
+            .push_str(&data.chars().take(500).collect::<String>());
+
         // Parse JSON - try CloudCodeResponse wrapper first, then direct GenerateContentResponse
         let response: GenerateContentResponse =
             match serde_json::from_str::<CloudCodeResponse>(data) {
                 Ok(wrapper) => wrapper.response,
-                Err(_) => match serde_json::from_str(data) {
-                    Ok(r) => r,
-                    Err(_) => {
-                        // Try to detect error responses from Google API
-                        // Google may return {"error": {"code": 404, "message": "...", "status": "NOT_FOUND"}}
-                        if let Ok(raw) = serde_json::from_str::<serde_json::Value>(data)
-                            && let Some(error_obj) = raw.get("error")
-                        {
+                Err(wrapper_err) => {
+                    // Before falling through, check if the JSON has a "response" key.
+                    // If it does, this IS a CloudCodeResponse wrapper but with unexpected
+                    // structure (e.g. missing "role" on content). Falling through to parse
+                    // as bare GenerateContentResponse would silently produce all-None fields
+                    // since serde ignores unknown keys.
+                    if let Ok(raw) = serde_json::from_str::<serde_json::Value>(data) {
+                        if raw.get("response").is_some() {
+                            // Extract any text from the response for a useful error message
+                            let text = raw
+                                .pointer("/response/candidates/0/content/parts/0/text")
+                                .and_then(|v| v.as_str());
+
+                            let message = if let Some(msg) = text {
+                                msg.to_string()
+                            } else {
+                                format!(
+                                    "Failed to parse CloudCodeResponse ({}). Raw: {}",
+                                    wrapper_err,
+                                    data.chars().take(300).collect::<String>()
+                                )
+                            };
+
+                            tracing::warn!(
+                                model = %self.model,
+                                message = %message,
+                                "Unparseable CloudCodeResponse wrapper"
+                            );
+
+                            return Some(vec![StreamEvent::Error {
+                                error: ErrorData {
+                                    error_type: "api_error".to_string(),
+                                    message,
+                                },
+                            }]);
+                        }
+
+                        // Check for top-level error responses from Google API
+                        // e.g. {"error": {"code": 404, "message": "...", "status": "NOT_FOUND"}}
+                        if let Some(error_obj) = raw.get("error") {
                             let code = error_obj.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
                             let message = error_obj
                                 .get("message")
@@ -130,13 +169,20 @@ impl SseParser {
                                 },
                             }]);
                         }
-                        tracing::debug!(
-                            data = %data.chars().take(200).collect::<String>(),
-                            "Failed to parse SSE data"
-                        );
-                        return None;
                     }
-                },
+
+                    // Try direct GenerateContentResponse parse (for non-wrapper responses)
+                    match serde_json::from_str(data) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            tracing::debug!(
+                                data = %data.chars().take(200).collect::<String>(),
+                                "Failed to parse SSE data"
+                            );
+                            return None;
+                        }
+                    }
+                }
             };
 
         // Check for error in the parsed response
@@ -199,10 +245,28 @@ impl SseParser {
             }
         }
 
+        // Check for prompt-level blocking (promptFeedback with blockReason)
+        if let Some(feedback) = &response.prompt_feedback
+            && let Some(reason) = &feedback.block_reason
+        {
+            tracing::warn!(
+                model = %self.model,
+                block_reason = %reason,
+                "Prompt blocked by Google API"
+            );
+            return vec![StreamEvent::Error {
+                error: ErrorData {
+                    error_type: "invalid_request_error".to_string(),
+                    message: format!("Prompt blocked by Google API (reason: {})", reason),
+                },
+            }];
+        }
+
         // Check for no candidates at all (model unavailable or empty response)
         if first_candidate.is_none() && !self.has_emitted_start {
             tracing::warn!(
                 model = %self.model,
+                raw_data = %self.last_raw_data,
                 "Google API returned response with no candidates"
             );
             return vec![StreamEvent::Error {
@@ -632,6 +696,32 @@ mod tests {
                 assert_eq!(error.error_type, "api_error");
                 assert!(error.message.contains("UNAVAILABLE"));
                 assert!(error.message.contains("Model capacity exhausted"));
+            }
+            _ => panic!("Expected Error event, got {:?}", events[0]),
+        }
+    }
+
+    #[test]
+    fn test_sse_parser_version_gate_response() {
+        // Reproduce the exact response Google returns when client version is outdated.
+        // The response has candidates with content but no "role" field on the content object,
+        // causing CloudCodeResponse parsing to fail. We should extract the text and return
+        // it as an error instead of silently misreporting "no candidates."
+        let mut parser = SseParser::new("claude-opus-4-6-thinking");
+
+        let data = "data: {\"response\": {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"This version of Antigravity is no longer supported. Please update to receive the latest features!\"}]}}]}}\n\n";
+
+        let events = parser.feed(data);
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::Error { error } => {
+                assert_eq!(error.error_type, "api_error");
+                assert!(
+                    error.message.contains("no longer supported"),
+                    "Error message should contain the version gate text, got: {}",
+                    error.message
+                );
             }
             _ => panic!("Expected Error event, got {:?}", events[0]),
         }

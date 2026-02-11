@@ -146,11 +146,12 @@ pub fn openai_to_anthropic(request: &ChatCompletionRequest) -> MessagesRequest {
             serde_json::Value::Object(obj) => {
                 // {"type": "function", "function": {"name": "..."}}
                 if let Some(func) = obj.get("function")
-                    && let Some(name) = func.get("name").and_then(|n| n.as_str()) {
-                        return Some(crate::format::anthropic::ToolChoice::Tool {
-                            name: name.to_string(),
-                        });
-                    }
+                    && let Some(name) = func.get("name").and_then(|n| n.as_str())
+                {
+                    return Some(crate::format::anthropic::ToolChoice::Tool {
+                        name: name.to_string(),
+                    });
+                }
                 None
             }
             _ => None,
@@ -163,9 +164,10 @@ pub fn openai_to_anthropic(request: &ChatCompletionRequest) -> MessagesRequest {
             let json_instruction =
                 "You must respond with valid JSON. Output only JSON, no other text.";
             match system {
-                Some(SystemPrompt::Text(existing)) => {
-                    Some(SystemPrompt::Text(format!("{}\n\n{}", existing, json_instruction)))
-                }
+                Some(SystemPrompt::Text(existing)) => Some(SystemPrompt::Text(format!(
+                    "{}\n\n{}",
+                    existing, json_instruction
+                ))),
                 None => Some(SystemPrompt::Text(json_instruction.to_string())),
                 other => other,
             }
@@ -290,12 +292,10 @@ fn convert_chat_content(content: &ChatContent) -> MessageContent {
             let blocks: Vec<ContentBlock> = parts
                 .iter()
                 .map(|p| match p {
-                    crate::format::openai::ChatContentPart::Text { text } => {
-                        ContentBlock::Text {
-                            text: text.clone(),
-                            cache_control: None,
-                        }
-                    }
+                    crate::format::openai::ChatContentPart::Text { text } => ContentBlock::Text {
+                        text: text.clone(),
+                        cache_control: None,
+                    },
                     crate::format::openai::ChatContentPart::ImageUrl { image_url } => {
                         // Try to parse data URL
                         if let Some(data) = parse_data_url(&image_url.url) {

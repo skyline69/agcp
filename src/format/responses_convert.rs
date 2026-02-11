@@ -79,10 +79,11 @@ pub fn responses_to_anthropic(request: &ResponsesRequest) -> MessagesRequest {
                             // Try to append to last assistant message
                             if let Some(last) = messages.last_mut()
                                 && matches!(last.role, Role::Assistant)
-                                && let MessageContent::Blocks(blocks) = &mut last.content {
-                                    blocks.push(block);
-                                    continue;
-                                }
+                                && let MessageContent::Blocks(blocks) = &mut last.content
+                            {
+                                blocks.push(block);
+                                continue;
+                            }
 
                             messages.push(Message {
                                 role: Role::Assistant,
@@ -102,10 +103,11 @@ pub fn responses_to_anthropic(request: &ResponsesRequest) -> MessagesRequest {
                             // Try to append to last user message
                             if let Some(last) = messages.last_mut()
                                 && matches!(last.role, Role::User)
-                                && let MessageContent::Blocks(blocks) = &mut last.content {
-                                    blocks.push(block);
-                                    continue;
-                                }
+                                && let MessageContent::Blocks(blocks) = &mut last.content
+                            {
+                                blocks.push(block);
+                                continue;
+                            }
 
                             messages.push(Message {
                                 role: Role::User,

@@ -1029,38 +1029,38 @@ async fn handle_openai_streaming(
                     index: _,
                 } => {
                     // Emit initial tool call chunk with name and id
-                        let chunk = ChatCompletionChunk {
-                            id: chunk_id.clone(),
-                            object: "chat.completion.chunk".to_string(),
-                            created,
-                            model: model.clone(),
-                            choices: vec![ChunkChoice {
-                                index: 0,
-                                delta: ChunkDelta {
-                                    role: if !*sent_role {
-                                        Some("assistant".to_string())
-                                    } else {
-                                        None
-                                    },
-                                    content: None,
-                                    tool_calls: Some(vec![ChunkToolCall {
-                                        index: *tool_call_index,
-                                        id: Some(id.clone()),
-                                        call_type: Some("function".to_string()),
-                                        function: Some(ChunkFunction {
-                                            name: Some(name.clone()),
-                                            arguments: None,
-                                        }),
-                                    }]),
+                    let chunk = ChatCompletionChunk {
+                        id: chunk_id.clone(),
+                        object: "chat.completion.chunk".to_string(),
+                        created,
+                        model: model.clone(),
+                        choices: vec![ChunkChoice {
+                            index: 0,
+                            delta: ChunkDelta {
+                                role: if !*sent_role {
+                                    Some("assistant".to_string())
+                                } else {
+                                    None
                                 },
-                                finish_reason: None,
-                                logprobs: None,
-                            }],
-                            usage: None,
-                            system_fingerprint: None,
-                        };
-                        send_chunk(tx, &chunk);
-                        *sent_role = true;
+                                content: None,
+                                tool_calls: Some(vec![ChunkToolCall {
+                                    index: *tool_call_index,
+                                    id: Some(id.clone()),
+                                    call_type: Some("function".to_string()),
+                                    function: Some(ChunkFunction {
+                                        name: Some(name.clone()),
+                                        arguments: None,
+                                    }),
+                                }]),
+                            },
+                            finish_reason: None,
+                            logprobs: None,
+                        }],
+                        usage: None,
+                        system_fingerprint: None,
+                    };
+                    send_chunk(tx, &chunk);
+                    *sent_role = true;
                 }
                 StreamEvent::ContentBlockDelta { delta, .. } => match delta {
                     crate::format::ContentDelta::Text { text } => {
