@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use crate::format::google::CloudCodeRequest;
-use crate::format::{MessagesRequest, convert_request};
+use crate::format::{convert_request, MessagesRequest};
 use crate::models::{get_model_family, is_thinking_model};
 
 const SYSTEM_INSTRUCTION: &str = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**";
@@ -21,7 +21,7 @@ static SYSTEM_INSTRUCTION_IGNORE: LazyLock<String> = LazyLock::new(|| {
 static USER_AGENT: LazyLock<String> = LazyLock::new(|| {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    format!("antigravity/1.15.8 {}/{}", os, arch)
+    format!("antigravity/{} {}/{}", env!("CARGO_PKG_VERSION"), os, arch)
 });
 
 pub fn build_headers(

@@ -2,7 +2,7 @@
 
 use crate::format::anthropic::{
     ContentBlock, Message, MessageContent, MessagesRequest, MessagesResponse, Role, SystemPrompt,
-    Tool,
+    Tool, ToolResultContent,
 };
 use crate::format::responses::{
     InputTokensDetails, ResponseInput, ResponseInputContent, ResponseInputItem, ResponseInputPart,
@@ -24,36 +24,95 @@ pub fn responses_to_anthropic(request: &ResponsesRequest) -> MessagesRequest {
             }
             ResponseInput::Items(items) => {
                 for item in items {
-                    if let ResponseInputItem::Message { role, content } = item {
-                        let anthropic_role = match role.as_str() {
-                            "user" => Role::User,
-                            "assistant" => Role::Assistant,
-                            _ => Role::User,
-                        };
+                    match item {
+                        ResponseInputItem::Message { role, content } => {
+                            let anthropic_role = match role.as_str() {
+                                "user" => Role::User,
+                                "assistant" => Role::Assistant,
+                                _ => Role::User,
+                            };
 
-                        let text = match content {
-                            ResponseInputContent::Text(t) => t.clone(),
-                            ResponseInputContent::Parts(parts) => {
-                                let mut text = String::new();
-                                for part in parts {
-                                    match part {
-                                        ResponseInputPart::InputText { text: t } => {
-                                            text.push_str(t);
+                            let text = match content {
+                                ResponseInputContent::Text(t) => t.clone(),
+                                ResponseInputContent::Parts(parts) => {
+                                    let mut text = String::new();
+                                    for part in parts {
+                                        match part {
+                                            ResponseInputPart::InputText { text: t } => {
+                                                text.push_str(t);
+                                            }
+                                            ResponseInputPart::OutputText { text: t } => {
+                                                text.push_str(t);
+                                            }
+                                            ResponseInputPart::Other => {}
                                         }
-                                        ResponseInputPart::OutputText { text: t } => {
-                                            text.push_str(t);
-                                        }
-                                        ResponseInputPart::Other => {}
                                     }
+                                    text
                                 }
-                                text
-                            }
-                        };
+                            };
 
-                        messages.push(Message {
-                            role: anthropic_role,
-                            content: MessageContent::Text(text),
-                        });
+                            messages.push(Message {
+                                role: anthropic_role,
+                                content: MessageContent::Text(text),
+                            });
+                        }
+                        ResponseInputItem::FunctionCall {
+                            id,
+                            call_id,
+                            name,
+                            arguments,
+                        } => {
+                            // Convert to assistant message with tool_use block
+                            let tool_id = call_id.clone().or(id.clone()).unwrap_or_default();
+                            let tool_name = name.clone().unwrap_or_default();
+                            let input: serde_json::Value = arguments
+                                .as_deref()
+                                .and_then(|a| serde_json::from_str(a).ok())
+                                .unwrap_or_default();
+
+                            let block = ContentBlock::ToolUse {
+                                id: tool_id,
+                                name: tool_name,
+                                input,
+                            };
+
+                            // Try to append to last assistant message
+                            if let Some(last) = messages.last_mut()
+                                && matches!(last.role, Role::Assistant)
+                                && let MessageContent::Blocks(blocks) = &mut last.content {
+                                    blocks.push(block);
+                                    continue;
+                                }
+
+                            messages.push(Message {
+                                role: Role::Assistant,
+                                content: MessageContent::Blocks(vec![block]),
+                            });
+                        }
+                        ResponseInputItem::FunctionCallOutput { call_id, output } => {
+                            // Convert to user message with tool_result block
+                            let tool_use_id = call_id.clone().unwrap_or_default();
+                            let text = output.clone().unwrap_or_default();
+                            let block = ContentBlock::ToolResult {
+                                tool_use_id,
+                                content: ToolResultContent::Text(text),
+                                is_error: None,
+                            };
+
+                            // Try to append to last user message
+                            if let Some(last) = messages.last_mut()
+                                && matches!(last.role, Role::User)
+                                && let MessageContent::Blocks(blocks) = &mut last.content {
+                                    blocks.push(block);
+                                    continue;
+                                }
+
+                            messages.push(Message {
+                                role: Role::User,
+                                content: MessageContent::Blocks(vec![block]),
+                            });
+                        }
+                        ResponseInputItem::Other => {}
                     }
                 }
             }
@@ -110,6 +169,7 @@ pub fn responses_to_anthropic(request: &ResponsesRequest) -> MessagesRequest {
         stream: request.stream,
         tools,
         tool_choice: None,
+        thinking: None,
     }
 }
 

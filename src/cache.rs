@@ -64,13 +64,19 @@ impl ResponseCache {
     /// Generate a cache key from request parameters using SHA-256.
     ///
     /// The key is a deterministic hash of the model, messages, system prompt,
-    /// tools, and temperature. Returns a hex-encoded string (64 chars).
+    /// tools, temperature, max_tokens, top_p, top_k, and stop_sequences.
+    /// Returns a hex-encoded string (64 chars).
+    #[allow(clippy::too_many_arguments)]
     pub fn make_key(
         model: &str,
         messages_json: &str,
         system_json: Option<&str>,
         tools_json: Option<&str>,
         temperature: Option<f32>,
+        max_tokens: u32,
+        top_p: Option<f32>,
+        top_k: Option<u32>,
+        stop_sequences: Option<&str>,
     ) -> String {
         let mut hasher = Sha256::new();
         hasher.update(model.as_bytes());
@@ -87,6 +93,20 @@ impl ResponseCache {
         hasher.update(b"|");
         if let Some(temp) = temperature {
             hasher.update(temp.to_le_bytes());
+        }
+        hasher.update(b"|");
+        hasher.update(max_tokens.to_le_bytes());
+        hasher.update(b"|");
+        if let Some(tp) = top_p {
+            hasher.update(tp.to_le_bytes());
+        }
+        hasher.update(b"|");
+        if let Some(tk) = top_k {
+            hasher.update(tk.to_le_bytes());
+        }
+        hasher.update(b"|");
+        if let Some(stop) = stop_sequences {
+            hasher.update(stop.as_bytes());
         }
         let result = hasher.finalize();
         // Use a pre-allocated string and write hex directly (avoids per-byte format!)
@@ -211,7 +231,17 @@ mod tests {
     fn test_cache_basic_operations() {
         let mut cache = ResponseCache::new(true, 3600, 100);
 
-        let key = ResponseCache::make_key("claude-3", r#"[{"role":"user"}]"#, None, None, None);
+        let key = ResponseCache::make_key(
+            "claude-3",
+            r#"[{"role":"user"}]"#,
+            None,
+            None,
+            None,
+            1024,
+            None,
+            None,
+            None,
+        );
         let response = b"test response".to_vec();
 
         // Initially empty
@@ -276,6 +306,10 @@ mod tests {
             Some("system prompt"),
             None,
             Some(0.7),
+            1024,
+            None,
+            None,
+            None,
         );
         let key2 = ResponseCache::make_key(
             "claude-3",
@@ -283,6 +317,10 @@ mod tests {
             Some("system prompt"),
             None,
             Some(0.7),
+            1024,
+            None,
+            None,
+            None,
         );
         assert_eq!(key1, key2);
 
@@ -293,6 +331,10 @@ mod tests {
             Some("system prompt"),
             None,
             Some(0.7),
+            1024,
+            None,
+            None,
+            None,
         );
         assert_ne!(key1, key3);
 
@@ -303,6 +345,10 @@ mod tests {
             Some("system prompt"),
             None,
             Some(0.7),
+            1024,
+            None,
+            None,
+            None,
         );
         assert_ne!(key1, key4);
 
@@ -313,6 +359,10 @@ mod tests {
             Some("system prompt"),
             None,
             Some(0.9),
+            1024,
+            None,
+            None,
+            None,
         );
         assert_ne!(key1, key5);
 
@@ -323,8 +373,26 @@ mod tests {
             Some("different system"),
             None,
             Some(0.7),
+            1024,
+            None,
+            None,
+            None,
         );
         assert_ne!(key1, key6);
+
+        // Different max_tokens should produce different key
+        let key7 = ResponseCache::make_key(
+            "claude-3",
+            r#"[{"role":"user","content":"hello"}]"#,
+            Some("system prompt"),
+            None,
+            Some(0.7),
+            2048,
+            None,
+            None,
+            None,
+        );
+        assert_ne!(key1, key7);
 
         // Key should be valid hex (64 chars for SHA-256)
         assert_eq!(key1.len(), 64);

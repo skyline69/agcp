@@ -7,8 +7,8 @@ use crate::format::google::{
     InlineData, InlineDataPart, Part, TextPart, ThinkingConfig, ThoughtPart, ToolConfig,
 };
 use crate::format::signature_cache::{
-    GEMINI_SKIP_SIGNATURE, MIN_SIGNATURE_LENGTH, ModelFamily, get_cached_tool_signature,
-    is_signature_compatible,
+    get_cached_tool_signature, is_signature_compatible, ModelFamily, GEMINI_SKIP_SIGNATURE,
+    MIN_SIGNATURE_LENGTH,
 };
 use crate::models::{get_model_family, is_thinking_model};
 
@@ -26,18 +26,49 @@ pub fn convert_request(request: &MessagesRequest) -> GenerateContentRequest {
     let system_instruction = request.system.as_ref().map(convert_system_prompt);
 
     let thinking_config = if is_thinking {
-        match model_family {
-            "claude" => Some(ThinkingConfig::Claude {
-                include_thoughts: true,
-            }),
-            "gemini" => Some(ThinkingConfig::Gemini {
-                include_thoughts: true,
-                thinking_budget: 16000,
-            }),
-            _ => None,
+        // If client explicitly provided thinking config, respect it
+        let budget = request.thinking.as_ref().and_then(|t| match t {
+            crate::format::anthropic::ThinkingConfig::Enabled { budget_tokens } => *budget_tokens,
+            crate::format::anthropic::ThinkingConfig::Disabled => None,
+        });
+
+        // Check if client explicitly disabled thinking
+        let disabled = matches!(
+            request.thinking,
+            Some(crate::format::anthropic::ThinkingConfig::Disabled)
+        );
+
+        if disabled {
+            None
+        } else {
+            match model_family {
+                "claude" => Some(ThinkingConfig::Claude {
+                    include_thoughts: true,
+                }),
+                "gemini" => Some(ThinkingConfig::Gemini {
+                    include_thoughts: true,
+                    thinking_budget: budget.unwrap_or(16000),
+                }),
+                _ => None,
+            }
         }
     } else {
-        None
+        // Non-thinking model, but client may have requested thinking explicitly
+        match &request.thinking {
+            Some(crate::format::anthropic::ThinkingConfig::Enabled { budget_tokens }) => {
+                match model_family {
+                    "claude" => Some(ThinkingConfig::Claude {
+                        include_thoughts: true,
+                    }),
+                    "gemini" => Some(ThinkingConfig::Gemini {
+                        include_thoughts: true,
+                        thinking_budget: budget_tokens.unwrap_or(16000),
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     };
 
     // Claude thinking models reject explicit temperature/top_p/top_k
@@ -436,6 +467,7 @@ mod tests {
             stream: false,
             tools: None,
             tool_choice: None,
+            thinking: None,
         }
     }
 

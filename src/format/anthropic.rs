@@ -21,6 +21,19 @@ pub struct MessagesRequest {
     pub stop_sequences: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
+}
+
+/// Client-provided thinking configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ThinkingConfig {
+    Enabled {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        budget_tokens: Option<u32>,
+    },
+    Disabled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

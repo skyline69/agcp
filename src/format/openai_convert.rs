@@ -134,6 +134,48 @@ pub fn openai_to_anthropic(request: &ChatCompletionRequest) -> MessagesRequest {
             .collect()
     });
 
+    // Convert tool_choice
+    let tool_choice = request.tool_choice.as_ref().and_then(|tc| {
+        match tc {
+            serde_json::Value::String(s) => match s.as_str() {
+                "auto" => Some(crate::format::anthropic::ToolChoice::Auto),
+                "required" | "any" => Some(crate::format::anthropic::ToolChoice::Any),
+                "none" => None, // No tool choice = don't use tools
+                _ => None,
+            },
+            serde_json::Value::Object(obj) => {
+                // {"type": "function", "function": {"name": "..."}}
+                if let Some(func) = obj.get("function")
+                    && let Some(name) = func.get("name").and_then(|n| n.as_str()) {
+                        return Some(crate::format::anthropic::ToolChoice::Tool {
+                            name: name.to_string(),
+                        });
+                    }
+                None
+            }
+            _ => None,
+        }
+    });
+
+    // Handle response_format: inject JSON instruction into system prompt if JSON mode requested
+    let system = if let Some(ref fmt) = request.response_format {
+        if fmt.format_type == "json_object" {
+            let json_instruction =
+                "You must respond with valid JSON. Output only JSON, no other text.";
+            match system {
+                Some(SystemPrompt::Text(existing)) => {
+                    Some(SystemPrompt::Text(format!("{}\n\n{}", existing, json_instruction)))
+                }
+                None => Some(SystemPrompt::Text(json_instruction.to_string())),
+                other => other,
+            }
+        } else {
+            system
+        }
+    } else {
+        system
+    };
+
     MessagesRequest {
         model: request.model.clone(),
         messages,
@@ -145,7 +187,8 @@ pub fn openai_to_anthropic(request: &ChatCompletionRequest) -> MessagesRequest {
         stop_sequences,
         stream: request.stream,
         tools,
-        tool_choice: None,
+        tool_choice,
+        thinking: None,
     }
 }
 
@@ -246,25 +289,30 @@ fn convert_chat_content(content: &ChatContent) -> MessageContent {
         ChatContent::Parts(parts) => {
             let blocks: Vec<ContentBlock> = parts
                 .iter()
-                .filter_map(|p| match p {
+                .map(|p| match p {
                     crate::format::openai::ChatContentPart::Text { text } => {
-                        Some(ContentBlock::Text {
+                        ContentBlock::Text {
                             text: text.clone(),
                             cache_control: None,
-                        })
+                        }
                     }
                     crate::format::openai::ChatContentPart::ImageUrl { image_url } => {
                         // Try to parse data URL
                         if let Some(data) = parse_data_url(&image_url.url) {
-                            Some(ContentBlock::Image {
+                            ContentBlock::Image {
                                 source: crate::format::anthropic::ImageSource {
                                     source_type: "base64".to_string(),
                                     media_type: data.0,
                                     data: data.1,
                                 },
-                            })
+                            }
                         } else {
-                            None
+                            // Non-data URL: include as text reference since
+                            // the upstream API does not support URL-based images
+                            ContentBlock::Text {
+                                text: format!("[Image: {}]", image_url.url),
+                                cache_control: None,
+                            }
                         }
                     }
                 })
@@ -324,6 +372,7 @@ mod tests {
             tool_choice: None,
             n: None,
             user: None,
+            response_format: None,
         };
 
         let anthropic = openai_to_anthropic(&request);

@@ -25,6 +25,8 @@ pub struct ChatCompletionRequest {
     pub n: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +34,16 @@ pub struct ChatCompletionRequest {
 pub enum StopSequence {
     Single(String),
     Multiple(Vec<String>),
+}
+
+/// Response format specification for JSON mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseFormat {
+    #[serde(rename = "type")]
+    pub format_type: String,
+    /// JSON schema (for structured output mode)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub json_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

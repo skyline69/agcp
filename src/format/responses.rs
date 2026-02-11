@@ -57,6 +57,18 @@ pub enum ResponseInputItem {
         role: String,
         content: ResponseInputContent,
     },
+    #[serde(rename = "function_call")]
+    FunctionCall {
+        id: Option<String>,
+        call_id: Option<String>,
+        name: Option<String>,
+        arguments: Option<String>,
+    },
+    #[serde(rename = "function_call_output")]
+    FunctionCallOutput {
+        call_id: Option<String>,
+        output: Option<String>,
+    },
     #[serde(other)]
     Other,
 }
@@ -255,6 +267,15 @@ pub enum ResponseStreamEvent {
         output_index: usize,
         content_index: usize,
         text: String,
+    },
+
+    #[serde(rename = "response.function_call_arguments.delta")]
+    FunctionCallArgumentsDelta { output_index: usize, delta: String },
+
+    #[serde(rename = "response.function_call_arguments.done")]
+    FunctionCallArgumentsDone {
+        output_index: usize,
+        arguments: String,
     },
 
     #[serde(rename = "response.completed")]

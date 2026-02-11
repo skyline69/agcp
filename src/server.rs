@@ -31,6 +31,10 @@ use crate::stats::get_stats;
 /// Maximum request body size (10 MB).
 const MAX_REQUEST_SIZE: usize = 10 * 1024 * 1024;
 
+/// Maximum time to wait for a single upstream frame before considering the
+/// stream stalled (seconds).
+const STREAM_FRAME_TIMEOUT_SECS: u64 = 300;
+
 /// Channel buffer size for streaming SSE responses.
 ///
 /// Sized to allow the upstream parser to stay ahead of the client without
@@ -138,6 +142,11 @@ async fn handle_request(
     );
 
     let start = std::time::Instant::now();
+
+    // Handle CORS preflight requests
+    if method == Method::OPTIONS {
+        return Ok(cors_preflight_response());
+    }
 
     // Check API key authentication for /v1/* endpoints
     let config = get_config();
@@ -329,12 +338,12 @@ fn is_internal_endpoint(path: &str) -> bool {
 }
 
 fn generate_request_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("req_{:016x}", nanos)
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).expect("Failed to generate random bytes");
+    format!(
+        "req_{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]
+    )
 }
 
 /// Get access token and project ID using account selection strategy.
@@ -650,6 +659,14 @@ async fn execute_messages_request(
             system_json.as_deref(),
             tools_json.as_deref(),
             messages_request.temperature,
+            messages_request.max_tokens,
+            messages_request.top_p,
+            messages_request.top_k,
+            messages_request
+                .stop_sequences
+                .as_ref()
+                .map(|s| serde_json::to_string(s).unwrap_or_default())
+                .as_deref(),
         );
 
         {
@@ -951,7 +968,9 @@ async fn handle_openai_streaming(
     let request_id = request_id.to_string();
 
     tokio::spawn(async move {
-        use crate::format::openai::{ChatCompletionChunk, ChatUsage, ChunkChoice, ChunkDelta};
+        use crate::format::openai::{
+            ChatCompletionChunk, ChatUsage, ChunkChoice, ChunkDelta, ChunkFunction, ChunkToolCall,
+        };
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let created = SystemTime::now()
@@ -964,6 +983,7 @@ async fn handle_openai_streaming(
         let mut input_tokens = 0u32;
         let mut output_tokens = 0u32;
         let mut sent_role = false;
+        let mut tool_call_index = 0u32;
 
         // Helper closure: serialize and send a chunk
         let send_chunk = |tx: &mpsc::Sender<Bytes>, chunk: &ChatCompletionChunk| -> bool {
@@ -978,7 +998,8 @@ async fn handle_openai_streaming(
                              tx: &mpsc::Sender<Bytes>,
                              input_tokens: &mut u32,
                              output_tokens: &mut u32,
-                             sent_role: &mut bool| {
+                             sent_role: &mut bool,
+                             tool_call_index: &mut u32| {
             match event {
                 StreamEvent::MessageStart { message } => {
                     *input_tokens = message.usage.input_tokens;
@@ -1002,6 +1023,44 @@ async fn handle_openai_streaming(
                     };
                     send_chunk(tx, &chunk);
                     *sent_role = true;
+                }
+                StreamEvent::ContentBlockStart {
+                    content_block: crate::format::ContentBlock::ToolUse { id, name, .. },
+                    index: _,
+                } => {
+                    // Emit initial tool call chunk with name and id
+                        let chunk = ChatCompletionChunk {
+                            id: chunk_id.clone(),
+                            object: "chat.completion.chunk".to_string(),
+                            created,
+                            model: model.clone(),
+                            choices: vec![ChunkChoice {
+                                index: 0,
+                                delta: ChunkDelta {
+                                    role: if !*sent_role {
+                                        Some("assistant".to_string())
+                                    } else {
+                                        None
+                                    },
+                                    content: None,
+                                    tool_calls: Some(vec![ChunkToolCall {
+                                        index: *tool_call_index,
+                                        id: Some(id.clone()),
+                                        call_type: Some("function".to_string()),
+                                        function: Some(ChunkFunction {
+                                            name: Some(name.clone()),
+                                            arguments: None,
+                                        }),
+                                    }]),
+                                },
+                                finish_reason: None,
+                                logprobs: None,
+                            }],
+                            usage: None,
+                            system_fingerprint: None,
+                        };
+                        send_chunk(tx, &chunk);
+                        *sent_role = true;
                 }
                 StreamEvent::ContentBlockDelta { delta, .. } => match delta {
                     crate::format::ContentDelta::Text { text } => {
@@ -1051,8 +1110,43 @@ async fn handle_openai_streaming(
                         };
                         send_chunk(tx, &chunk);
                     }
+                    crate::format::ContentDelta::InputJson { partial_json } => {
+                        // Stream tool call argument deltas
+                        let chunk = ChatCompletionChunk {
+                            id: chunk_id.clone(),
+                            object: "chat.completion.chunk".to_string(),
+                            created,
+                            model: model.clone(),
+                            choices: vec![ChunkChoice {
+                                index: 0,
+                                delta: ChunkDelta {
+                                    role: None,
+                                    content: None,
+                                    tool_calls: Some(vec![ChunkToolCall {
+                                        index: *tool_call_index,
+                                        id: None,
+                                        call_type: None,
+                                        function: Some(ChunkFunction {
+                                            name: None,
+                                            arguments: Some(partial_json.clone()),
+                                        }),
+                                    }]),
+                                },
+                                finish_reason: None,
+                                logprobs: None,
+                            }],
+                            usage: None,
+                            system_fingerprint: None,
+                        };
+                        send_chunk(tx, &chunk);
+                    }
                     _ => {}
                 },
+                StreamEvent::ContentBlockStop { .. } => {
+                    // If finishing a tool call block, increment tool call index
+                    // for next potential tool call
+                    *tool_call_index += 1;
+                }
                 StreamEvent::MessageDelta { delta, usage } => {
                     *output_tokens = usage.output_tokens;
                     let finish_reason = delta.stop_reason.map(|r| r.to_openai_str().to_string());
@@ -1088,8 +1182,9 @@ async fn handle_openai_streaming(
 
         loop {
             use http_body_util::BodyExt;
-            match incoming.frame().await {
-                Some(Ok(frame)) => {
+            let frame_timeout = Duration::from_secs(STREAM_FRAME_TIMEOUT_SECS);
+            match tokio::time::timeout(frame_timeout, incoming.frame()).await {
+                Ok(Some(Ok(frame))) => {
                     if let Ok(data) = frame.into_data() {
                         let chunk_str = String::from_utf8_lossy(&data);
                         for event in parser.feed(&chunk_str) {
@@ -1099,15 +1194,20 @@ async fn handle_openai_streaming(
                                 &mut input_tokens,
                                 &mut output_tokens,
                                 &mut sent_role,
+                                &mut tool_call_index,
                             );
                         }
                     }
                 }
-                Some(Err(e)) => {
+                Ok(Some(Err(e))) => {
                     warn!(error = %e, "Error reading upstream for OpenAI streaming");
                     break;
                 }
-                None => break,
+                Ok(None) => break,
+                Err(_) => {
+                    warn!("Upstream frame timeout in OpenAI streaming");
+                    break;
+                }
             }
         }
 
@@ -1118,6 +1218,7 @@ async fn handle_openai_streaming(
                 &mut input_tokens,
                 &mut output_tokens,
                 &mut sent_role,
+                &mut tool_call_index,
             );
         }
 
@@ -1510,11 +1611,27 @@ async fn handle_responses_streaming(
                     }
                     crate::format::ContentDelta::InputJson { partial_json } => {
                         current_tool_json.push_str(partial_json);
+                        // Emit function_call_arguments.delta for streaming tool calls
+                        emit(
+                            tx,
+                            &ResponseStreamEvent::FunctionCallArgumentsDelta {
+                                output_index: output_index.saturating_sub(1),
+                                delta: partial_json.clone(),
+                            },
+                        );
                     }
                     _ => {}
                 },
                 StreamEvent::ContentBlockStop { .. } => {
                     if !current_tool_id.is_empty() {
+                        // Emit function_call_arguments.done
+                        emit(
+                            tx,
+                            &ResponseStreamEvent::FunctionCallArgumentsDone {
+                                output_index: output_index.saturating_sub(1),
+                                arguments: current_tool_json.clone(),
+                            },
+                        );
                         let fc_item = ResponseOutputItem::FunctionCall {
                             id: format!("fc_{}", current_tool_id),
                             call_id: current_tool_id.clone(),
@@ -1546,8 +1663,9 @@ async fn handle_responses_streaming(
         let mut incoming = upstream.into_body();
         loop {
             use http_body_util::BodyExt;
-            match incoming.frame().await {
-                Some(Ok(frame)) => {
+            let frame_timeout = Duration::from_secs(STREAM_FRAME_TIMEOUT_SECS);
+            match tokio::time::timeout(frame_timeout, incoming.frame()).await {
+                Ok(Some(Ok(frame))) => {
                     if let Ok(data) = frame.into_data() {
                         let chunk_str = String::from_utf8_lossy(&data);
                         for event in parser.feed(&chunk_str) {
@@ -1571,11 +1689,15 @@ async fn handle_responses_streaming(
                         }
                     }
                 }
-                Some(Err(e)) => {
+                Ok(Some(Err(e))) => {
                     warn!(error = %e, "Error reading upstream for Responses streaming");
                     break;
                 }
-                None => break,
+                Ok(None) => break,
+                Err(_) => {
+                    warn!("Upstream frame timeout in Responses streaming");
+                    break;
+                }
             }
         }
 
@@ -1976,9 +2098,10 @@ async fn handle_streaming_messages(
         // Read chunks from upstream as they arrive.
         loop {
             use http_body_util::BodyExt;
-            let frame = incoming.frame().await;
+            let frame_timeout = Duration::from_secs(STREAM_FRAME_TIMEOUT_SECS);
+            let frame = tokio::time::timeout(frame_timeout, incoming.frame()).await;
             match frame {
-                Some(Ok(frame)) => {
+                Ok(Some(Ok(frame))) => {
                     if let Ok(data) = frame.into_data() {
                         body_len += data.len();
                         let chunk_str = String::from_utf8_lossy(&data);
@@ -2017,7 +2140,7 @@ async fn handle_streaming_messages(
                         }
                     }
                 }
-                Some(Err(e)) => {
+                Ok(Some(Err(e))) => {
                     warn!(
                         model = %model,
                         request_id = %request_id,
@@ -2026,7 +2149,15 @@ async fn handle_streaming_messages(
                     );
                     break;
                 }
-                None => break, // End of upstream stream
+                Ok(None) => break, // End of upstream stream
+                Err(_) => {
+                    warn!(
+                        model = %model,
+                        request_id = %request_id,
+                        "Upstream frame timeout in Anthropic streaming"
+                    );
+                    break;
+                }
             }
         }
 
@@ -2357,7 +2488,28 @@ fn json_response(status: StatusCode, body: &str) -> Response<ResponseBody> {
     Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        .header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, X-API-Key, X-No-Cache, Cache-Control",
+        )
         .body(full_body(Full::new(Bytes::from(body.to_string()))))
+        .unwrap()
+}
+
+/// CORS preflight response.
+fn cors_preflight_response() -> Response<ResponseBody> {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        .header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, X-API-Key, X-No-Cache, Cache-Control",
+        )
+        .header("Access-Control-Max-Age", "86400")
+        .body(full_body(Full::new(Bytes::new())))
         .unwrap()
 }
 
@@ -2379,7 +2531,8 @@ fn json_ok_response(
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/json")
-        .header("X-Request-Id", request_id);
+        .header("X-Request-Id", request_id)
+        .header("Access-Control-Allow-Origin", "*");
 
     if let Some(cache_status) = cache {
         builder = builder.header("X-Cache", cache_status);
@@ -2397,6 +2550,7 @@ fn sse_streaming_response(body: ResponseBody, request_id: &str) -> Response<Resp
         .header("Connection", "keep-alive")
         .header("X-Request-Id", request_id)
         .header("X-Cache", "BYPASS")
+        .header("Access-Control-Allow-Origin", "*")
         .body(body)
         .unwrap()
 }

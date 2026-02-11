@@ -106,7 +106,7 @@ impl HttpClient {
     ) -> Result<Vec<u8>, String> {
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
-        let user_agent = format!("antigravity/1.15.8 {}/{}", os, arch);
+        let user_agent = format!("antigravity/{} {}/{}", env!("CARGO_PKG_VERSION"), os, arch);
 
         let client_metadata = r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#;
 
@@ -151,7 +151,7 @@ impl HttpClient {
     ) -> Result<Vec<u8>, String> {
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
-        let user_agent = format!("antigravity/1.15.8 {}/{}", os, arch);
+        let user_agent = format!("antigravity/{} {}/{}", env!("CARGO_PKG_VERSION"), os, arch);
 
         let client_metadata = r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#;
 
