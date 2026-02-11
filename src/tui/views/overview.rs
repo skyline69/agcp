@@ -11,8 +11,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let status = app.get_cached_server_status();
     let accounts = &app.accounts;
 
-    // Get config for address/port
-    let config = crate::config::get_config();
+    // Get config for address/port, but prefer the actual daemon address if available
+    let (display_host, display_port) = crate::config::get_daemon_host_port();
 
     // Use cached stats (refreshed alongside logs every 500ms, not per frame)
     let log_request_count = app.cached_request_count;
@@ -54,8 +54,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     // Status panel - use daemon uptime from logs
     let status_panel = StatusPanel::new(
         status,
-        config.host(),
-        config.port(),
+        &display_host,
+        display_port,
         uptime,
         app.daemon_status_message.as_ref(),
     );

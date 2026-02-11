@@ -1884,6 +1884,7 @@ impl App {
             }
         }
         let _ = std::fs::remove_file(&pid_path);
+        let _ = std::fs::remove_file(crate::config::get_addr_path());
 
         // Small delay to ensure port is released
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -1934,6 +1935,12 @@ impl App {
             Ok(child) => {
                 // Write new PID
                 let _ = std::fs::write(&pid_path, child.id().to_string());
+                // Write addr file for the new daemon
+                let addr_path = crate::config::get_addr_path();
+                let _ = std::fs::write(
+                    &addr_path,
+                    format!("{}:{}", config.server.host, config.server.port),
+                );
             }
             Err(e) => {
                 self.config_error = Some(format!("Failed to start daemon: {}", e));
@@ -2009,6 +2016,12 @@ impl App {
         match cmd.spawn() {
             Ok(child) => {
                 let _ = std::fs::write(&pid_path, child.id().to_string());
+                // Write the addr file so other tools/TUI can discover the real port
+                let addr_path = crate::config::get_addr_path();
+                let _ = std::fs::write(
+                    &addr_path,
+                    format!("{}:{}", config.server.host, config.server.port),
+                );
                 self.daemon_status_message = Some(("Started".to_string(), false, Instant::now()));
                 // Force immediate status refresh
                 self.last_status_refresh = Instant::now() - std::time::Duration::from_secs(10);
@@ -2052,6 +2065,7 @@ impl App {
 
         if !alive {
             let _ = std::fs::remove_file(&pid_path);
+            let _ = std::fs::remove_file(crate::config::get_addr_path());
             self.daemon_status_message = Some(("Not running".to_string(), true, Instant::now()));
             return;
         }
@@ -2080,6 +2094,7 @@ impl App {
         }
 
         let _ = std::fs::remove_file(&pid_path);
+        let _ = std::fs::remove_file(crate::config::get_addr_path());
         self.daemon_status_message = Some(("Stopped".to_string(), false, Instant::now()));
         // Force immediate status refresh
         self.last_status_refresh = Instant::now() - std::time::Duration::from_secs(10);

@@ -93,6 +93,25 @@ fn get_lock_path() -> std::path::PathBuf {
     Config::dir().join("agcp.lock")
 }
 
+fn get_addr_path() -> std::path::PathBuf {
+    config::get_addr_path()
+}
+
+/// Read the daemon's actual listening address from the addr file.
+/// Returns e.g. "127.0.0.1:3000" or None if not available.
+fn read_addr() -> Option<String> {
+    config::read_daemon_addr()
+}
+
+/// Write the daemon's actual listening address to the addr file.
+fn write_addr(host: &str, port: u16) {
+    let addr_path = get_addr_path();
+    if let Some(parent) = addr_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(addr_path, format!("{}:{}", host, port));
+}
+
 fn parse_strategy(s: &str) -> Option<auth::accounts::SelectionStrategy> {
     use auth::accounts::SelectionStrategy;
     match s.to_lowercase().as_str() {
@@ -387,7 +406,8 @@ async fn run_daemon(config: Config, debug: bool) {
         None => {
             // Another instance has the lock - check if it's responsive
             if let Some(pid) = read_pid() {
-                let addr = format!("{}:{}", config.host(), config.port());
+                let addr =
+                    read_addr().unwrap_or_else(|| format!("{}:{}", config.host(), config.port()));
                 let is_responsive = addr
                     .parse()
                     .ok()
@@ -402,7 +422,12 @@ async fn run_daemon(config: Config, debug: bool) {
 
                 if is_responsive {
                     println!("\x1b[32m●\x1b[0m AGCP is already running (PID: {})", pid);
-                    print_listening_address(config.host(), config.port());
+                    if let Some((host, port_str)) = addr.rsplit_once(':') {
+                        let port = port_str.parse::<u16>().unwrap_or(config.port());
+                        print_listening_address(host, port);
+                    } else {
+                        print_listening_address(config.host(), config.port());
+                    }
                     println!();
                     println!("  \x1b[2mUse 'agcp logs' to view logs\x1b[0m");
                     println!("  \x1b[2mUse 'agcp stop' to stop the server\x1b[0m");
@@ -420,7 +445,7 @@ async fn run_daemon(config: Config, debug: bool) {
         && is_process_running(pid)
     {
         // Verify server is actually responsive (not a zombie)
-        let addr = format!("{}:{}", config.host(), config.port());
+        let addr = read_addr().unwrap_or_else(|| format!("{}:{}", config.host(), config.port()));
         let is_responsive = addr
             .parse()
             .ok()
@@ -435,7 +460,12 @@ async fn run_daemon(config: Config, debug: bool) {
 
         if is_responsive {
             println!("\x1b[32m●\x1b[0m AGCP is already running (PID: {})", pid);
-            print_listening_address(config.host(), config.port());
+            if let Some((host, port_str)) = addr.rsplit_once(':') {
+                let port = port_str.parse::<u16>().unwrap_or(config.port());
+                print_listening_address(host, port);
+            } else {
+                print_listening_address(config.host(), config.port());
+            }
             println!();
             println!("  \x1b[2mUse 'agcp logs' to view logs\x1b[0m");
             println!("  \x1b[2mUse 'agcp stop' to stop the server\x1b[0m");
@@ -447,6 +477,7 @@ async fn run_daemon(config: Config, debug: bool) {
                 pid
             );
             let _ = std::fs::remove_file(get_pid_path());
+            let _ = std::fs::remove_file(get_addr_path());
         }
     }
 
@@ -520,6 +551,7 @@ async fn run_daemon(config: Config, debug: bool) {
             Ok(child) => {
                 let pid = child.id();
                 write_pid(pid);
+                write_addr(config.host(), config.port());
 
                 // Show spinner while waiting for startup
                 let spinner = Spinner::new("Starting AGCP...");
@@ -944,10 +976,12 @@ fn run_stop_command() {
                 );
             } else {
                 let _ = std::fs::remove_file(get_pid_path());
+                let _ = std::fs::remove_file(get_addr_path());
                 println!("\x1b[31m●\x1b[0m AGCP stopped");
             }
         } else {
             let _ = std::fs::remove_file(get_pid_path());
+            let _ = std::fs::remove_file(get_addr_path());
             println!("\x1b[2m●\x1b[0m AGCP is not running");
         }
     } else {
@@ -993,6 +1027,7 @@ async fn run_restart_command() {
         }
 
         let _ = std::fs::remove_file(get_pid_path());
+        let _ = std::fs::remove_file(get_addr_path());
     }
 
     // Small delay to ensure port is released
@@ -1007,11 +1042,20 @@ fn run_status_command() {
         if is_process_running(pid) {
             let config = Config::load().unwrap_or_default();
 
+            // Use the addr file for the actual runtime address, fallback to config
+            let addr =
+                read_addr().unwrap_or_else(|| format!("{}:{}", config.host(), config.port()));
+
             println!("{}●{} AGCP is running (PID: {})", GREEN, RESET, pid);
-            print_listening_address(config.host(), config.port());
+            // Parse host:port from addr for display
+            if let Some((host, port_str)) = addr.rsplit_once(':') {
+                let port = port_str.parse::<u16>().unwrap_or(config.port());
+                print_listening_address(host, port);
+            } else {
+                print_listening_address(config.host(), config.port());
+            }
 
             // Try to fetch stats from running server
-            let addr = format!("{}:{}", config.host(), config.port());
             if let Ok(stats) = fetch_stats_sync(&addr) {
                 // Uptime
                 if let Some(uptime_secs) = stats["uptime_seconds"].as_u64() {
@@ -1051,6 +1095,7 @@ fn run_status_command() {
             println!("  {}Use 'agcp stop' to stop the server{}", DIM, RESET);
         } else {
             let _ = std::fs::remove_file(get_pid_path());
+            let _ = std::fs::remove_file(get_addr_path());
             println!("{}●{} AGCP is not running", DIM, RESET);
             println!();
             println!("  {}Start with 'agcp'{}", DIM, RESET);

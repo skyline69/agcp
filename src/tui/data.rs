@@ -417,8 +417,7 @@ impl DataProvider {
             use std::net::TcpStream;
             use std::time::Duration;
 
-            let config = crate::config::get_config();
-            let addr = format!("{}:{}", config.server.host, config.server.port);
+            let addr = crate::config::get_daemon_addr();
             let sock_addr = match addr.parse() {
                 Ok(a) => a,
                 Err(_) => return ServerStatus::Stopped,
@@ -483,8 +482,7 @@ impl DataProvider {
         use std::net::TcpStream;
         use std::time::Duration;
 
-        let config = crate::config::get_config();
-        let addr = format!("{}:{}", config.server.host, config.server.port);
+        let addr = crate::config::get_daemon_addr();
 
         let mut stream =
             TcpStream::connect_timeout(&addr.parse().ok()?, Duration::from_millis(500)).ok()?;

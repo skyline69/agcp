@@ -434,6 +434,43 @@ impl Config {
     }
 }
 
+/// Get the path to the daemon address file (`~/.config/agcp/agcp.addr`).
+/// This file contains the `host:port` the daemon is actually listening on,
+/// which may differ from the config file if `--port` was used at startup.
+pub fn get_addr_path() -> std::path::PathBuf {
+    Config::dir().join("agcp.addr")
+}
+
+/// Read the daemon's actual listening address from the addr file.
+/// Returns e.g. `"127.0.0.1:3000"` or `None` if not available.
+pub fn read_daemon_addr() -> Option<String> {
+    std::fs::read_to_string(get_addr_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Get the daemon's address, falling back to config if the addr file isn't available.
+/// This should be used whenever you need to connect to the running daemon.
+pub fn get_daemon_addr() -> String {
+    read_daemon_addr().unwrap_or_else(|| {
+        let config = get_config();
+        format!("{}:{}", config.server.host, config.server.port)
+    })
+}
+
+/// Parse the daemon address into (host, port), falling back to config defaults.
+pub fn get_daemon_host_port() -> (String, u16) {
+    let addr = get_daemon_addr();
+    if let Some((host, port_str)) = addr.rsplit_once(':')
+        && let Ok(port) = port_str.parse::<u16>()
+    {
+        return (host.to_string(), port);
+    }
+    let config = get_config();
+    (config.server.host.clone(), config.server.port)
+}
+
 pub mod dirs {
     use std::path::PathBuf;
 
