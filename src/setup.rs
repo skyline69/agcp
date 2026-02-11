@@ -39,10 +39,10 @@ struct Tool {
     configure: fn(&Path, &str) -> Result<(), String>,
 }
 
-/// Get the AGCP proxy URL based on config
+/// Get the AGCP proxy URL based on the running daemon's address, falling back to config
 fn get_proxy_url() -> String {
-    let config = Config::load().unwrap_or_default();
-    format!("http://{}:{}", config.host(), config.port())
+    let (host, port) = crate::config::get_daemon_host_port();
+    format!("http://{}:{}", host, port)
 }
 
 /// Get the backups directory
@@ -627,6 +627,18 @@ pub fn run_setup_command(args: &[String]) {
     println!();
 
     let proxy_url = get_proxy_url();
+    println!("  Proxy URL: {}{}{}", CYAN, proxy_url, RESET);
+
+    // Warn if daemon is running on a different port than the config file
+    let config = Config::load().unwrap_or_default();
+    let config_url = format!("http://{}:{}", config.host(), config.port());
+    if proxy_url != config_url {
+        println!(
+            "  {}Note: Daemon is running on {}, which differs from config ({}){}\n",
+            YELLOW, proxy_url, config_url, RESET
+        );
+    }
+    println!();
     let tools = get_tools();
 
     // Detect installed tools
@@ -729,6 +741,29 @@ pub fn run_setup_command(args: &[String]) {
                 println!("{}✗ {}{}", YELLOW, e, RESET);
             }
         }
+    }
+
+    println!();
+
+    // Verify daemon is reachable at the configured URL
+    let (host, port) = crate::config::get_daemon_host_port();
+    let addr = format!("{}:{}", host, port);
+    let reachable = addr
+        .parse::<std::net::SocketAddr>()
+        .ok()
+        .and_then(|sa| {
+            std::net::TcpStream::connect_timeout(&sa, std::time::Duration::from_millis(500)).ok()
+        })
+        .is_some();
+
+    if reachable {
+        println!("{}✓{} Daemon is running at {}", GREEN, RESET, proxy_url);
+    } else {
+        println!(
+            "{}!{} Daemon is not running at {}",
+            YELLOW, RESET, proxy_url
+        );
+        println!("  {}Start it with: agcp{}", DIM, RESET);
     }
 
     println!();
