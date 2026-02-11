@@ -24,6 +24,15 @@ const MIN_WIDTH: u16 = 60;
 /// Minimum terminal height for proper display
 const MIN_HEIGHT: u16 = 15;
 
+/// Linearly interpolate between two u64 values.
+fn lerp_u64(from: u64, to: u64, t: f64) -> u64 {
+    if to >= from {
+        from + ((to - from) as f64 * t) as u64
+    } else {
+        from - ((from - to) as f64 * t) as u64
+    }
+}
+
 /// Available tabs in the TUI
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
@@ -271,6 +280,20 @@ pub struct App {
     pub cached_uptime: String,
     /// Cached token usage stats (fetched from /stats endpoint)
     pub cached_token_stats: Option<super::data::TokenStats>,
+    /// Animated token display values (interpolated for count-up effect)
+    pub animated_input_tokens: u64,
+    pub animated_output_tokens: u64,
+    pub animated_cache_read_tokens: u64,
+    /// Previous token values (start of animation)
+    token_anim_prev_input: u64,
+    token_anim_prev_output: u64,
+    token_anim_prev_cache_read: u64,
+    /// Target token values (end of animation)
+    token_anim_target_input: u64,
+    token_anim_target_output: u64,
+    token_anim_target_cache_read: u64,
+    /// When the current animation started (in animation_time_ms)
+    token_anim_start_ms: u64,
     /// Rolling time-series of token usage per model
     pub token_history: super::data::TokenHistory,
     /// Last time token stats were fetched
@@ -416,6 +439,16 @@ impl App {
             cached_requests_per_min: 0.0,
             cached_uptime: String::from("00:00:00"),
             cached_token_stats: None,
+            animated_input_tokens: 0,
+            animated_output_tokens: 0,
+            animated_cache_read_tokens: 0,
+            token_anim_prev_input: 0,
+            token_anim_prev_output: 0,
+            token_anim_prev_cache_read: 0,
+            token_anim_target_input: 0,
+            token_anim_target_output: 0,
+            token_anim_target_cache_read: 0,
+            token_anim_start_ms: 0,
             token_history: super::data::TokenHistory::load(),
             last_token_stats_refresh: Instant::now() - Duration::from_secs(10),
             last_token_history_save: Instant::now(),
@@ -517,7 +550,28 @@ impl App {
             return;
         }
         self.last_token_stats_refresh = Instant::now();
-        self.cached_token_stats = super::data::DataProvider::fetch_token_stats();
+        let new_stats = super::data::DataProvider::fetch_token_stats();
+
+        // Trigger count-up animation if values changed
+        if let Some(ref stats) = new_stats {
+            let changed = stats.total_input_tokens != self.token_anim_target_input
+                || stats.total_output_tokens != self.token_anim_target_output
+                || stats.total_cache_read_tokens != self.token_anim_target_cache_read;
+            if changed {
+                // Snapshot current displayed values as the animation start
+                self.token_anim_prev_input = self.animated_input_tokens;
+                self.token_anim_prev_output = self.animated_output_tokens;
+                self.token_anim_prev_cache_read = self.animated_cache_read_tokens;
+                // Set targets
+                self.token_anim_target_input = stats.total_input_tokens;
+                self.token_anim_target_output = stats.total_output_tokens;
+                self.token_anim_target_cache_read = stats.total_cache_read_tokens;
+                // Record animation start time
+                self.token_anim_start_ms = self.animation_time_ms;
+            }
+        }
+
+        self.cached_token_stats = new_stats;
 
         // Update quota period from quota data
         if self.token_history.period_start.is_none()
@@ -555,6 +609,42 @@ impl App {
             .filter_map(|q| q.reset_time.as_ref())
             .min()
             .cloned()
+    }
+
+    /// Duration of the token count-up animation in milliseconds
+    const TOKEN_ANIM_DURATION_MS: u64 = 400;
+
+    /// Update animated token values (called every frame).
+    /// Interpolates from previous to target values with ease-out.
+    pub fn update_token_animation(&mut self) {
+        let elapsed = self
+            .animation_time_ms
+            .saturating_sub(self.token_anim_start_ms);
+        if elapsed >= Self::TOKEN_ANIM_DURATION_MS {
+            // Animation complete — snap to target
+            self.animated_input_tokens = self.token_anim_target_input;
+            self.animated_output_tokens = self.token_anim_target_output;
+            self.animated_cache_read_tokens = self.token_anim_target_cache_read;
+        } else {
+            // Ease-out: t * (2 - t)
+            let t = elapsed as f64 / Self::TOKEN_ANIM_DURATION_MS as f64;
+            let eased = t * (2.0 - t);
+            self.animated_input_tokens = lerp_u64(
+                self.token_anim_prev_input,
+                self.token_anim_target_input,
+                eased,
+            );
+            self.animated_output_tokens = lerp_u64(
+                self.token_anim_prev_output,
+                self.token_anim_target_output,
+                eased,
+            );
+            self.animated_cache_read_tokens = lerp_u64(
+                self.token_anim_prev_cache_read,
+                self.token_anim_target_cache_read,
+                eased,
+            );
+        }
     }
 
     /// Rebuild the filtered log indices based on current filter/search state
@@ -2548,6 +2638,9 @@ fn render(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     app.animation_time_ms = app
         .animation_time_ms
         .wrapping_add(elapsed.as_millis() as u64);
+
+    // Update token count-up animation
+    app.update_token_animation();
 
     // Main layout: Header | Tabs | Content | Footer
     let chunks = Layout::vertical([

@@ -42,7 +42,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     ])
     .split(area);
 
-    render_summary(frame, layout[0], stats);
+    render_summary(frame, layout[0], app);
     render_cumulative_chart(frame, layout[1], app);
 }
 
@@ -69,8 +69,8 @@ fn render_no_data(frame: &mut Frame, area: Rect) {
     frame.render_widget(msg, centered);
 }
 
-/// Render the summary panel with total token counts
-fn render_summary(frame: &mut Frame, area: Rect, stats: &crate::tui::data::TokenStats) {
+/// Render the summary panel with total token counts (using animated values)
+fn render_summary(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(" Token Usage Summary ")
         .title_style(theme::primary())
@@ -82,7 +82,11 @@ fn render_summary(frame: &mut Frame, area: Rect, stats: &crate::tui::data::Token
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let total = stats.total_input_tokens + stats.total_output_tokens;
+    // Use animated values for the count-up effect
+    let input = app.animated_input_tokens;
+    let output = app.animated_output_tokens;
+    let cache_read = app.animated_cache_read_tokens;
+    let total = input + output;
 
     let mut spans = vec![
         Span::styled(
@@ -91,10 +95,7 @@ fn render_summary(frame: &mut Frame, area: Rect, stats: &crate::tui::data::Token
                 .fg(theme::TEXT)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format_tokens(stats.total_input_tokens),
-            Style::default().fg(theme::SECONDARY),
-        ),
+        Span::styled(format_tokens(input), Style::default().fg(theme::SECONDARY)),
         Span::raw("    "),
         Span::styled(
             "Output: ",
@@ -102,13 +103,10 @@ fn render_summary(frame: &mut Frame, area: Rect, stats: &crate::tui::data::Token
                 .fg(theme::TEXT)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format_tokens(stats.total_output_tokens),
-            Style::default().fg(theme::PRIMARY),
-        ),
+        Span::styled(format_tokens(output), Style::default().fg(theme::PRIMARY)),
     ];
 
-    if stats.total_cache_read_tokens > 0 {
+    if cache_read > 0 {
         spans.push(Span::raw("    "));
         spans.push(Span::styled(
             "Cached: ",
@@ -117,7 +115,7 @@ fn render_summary(frame: &mut Frame, area: Rect, stats: &crate::tui::data::Token
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            format_tokens(stats.total_cache_read_tokens),
+            format_tokens(cache_read),
             Style::default().fg(theme::SUCCESS),
         ));
     }
@@ -135,6 +133,7 @@ fn render_summary(frame: &mut Frame, area: Rect, stats: &crate::tui::data::Token
     ));
 
     // Second line: per-model totals with matching colors, sorted by usage
+    let stats = app.cached_token_stats.as_ref().unwrap();
     let mut sorted_models: Vec<_> = stats.models.iter().collect();
     sorted_models.sort_by(|a, b| {
         let a_total = a.input_tokens + a.output_tokens;

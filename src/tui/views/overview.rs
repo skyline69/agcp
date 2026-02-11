@@ -62,11 +62,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(status_panel, top_chunks[0]);
 
     // Stats panel - comprehensive stats
-    let (total_in, total_out) = app
-        .cached_token_stats
-        .as_ref()
-        .map(|t| (t.total_input_tokens, t.total_output_tokens))
-        .unwrap_or((0, 0));
+    let (total_in, total_out) = (app.animated_input_tokens, app.animated_output_tokens);
     let stats_panel = StatsPanel::new(
         log_request_count,
         requests_per_min,

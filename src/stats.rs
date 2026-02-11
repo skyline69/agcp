@@ -494,9 +494,21 @@ impl StatsSummary {
 mod tests {
     use super::*;
 
+    /// Create a fresh Stats without loading persistent data from disk.
+    fn fresh_stats() -> Stats {
+        Stats {
+            requests: RwLock::new(HashMap::new()),
+            start_time: Instant::now(),
+            endpoint_requests: RwLock::new(HashMap::new()),
+            rate_history: RwLock::new(RateHistory::new()),
+            token_counters: RwLock::new(HashMap::new()),
+            token_events: RwLock::new(VecDeque::with_capacity(MAX_TOKEN_EVENTS)),
+        }
+    }
+
     #[test]
     fn test_stats_record_request() {
-        let stats = Stats::new();
+        let stats = fresh_stats();
         stats.record_request("claude-sonnet-4-5", "/v1/messages");
         stats.record_request("claude-sonnet-4-5", "/v1/messages");
         stats.record_request("claude-opus-4-5", "/v1/chat/completions");
@@ -509,14 +521,14 @@ mod tests {
 
     #[test]
     fn test_stats_uptime() {
-        let stats = Stats::new();
+        let stats = fresh_stats();
         std::thread::sleep(std::time::Duration::from_millis(10));
         assert!(stats.uptime().as_millis() >= 10);
     }
 
     #[test]
     fn test_stats_to_json() {
-        let stats = Stats::new();
+        let stats = fresh_stats();
         stats.record_request("test-model", "/v1/messages");
 
         let summary = stats.summary();
@@ -528,7 +540,7 @@ mod tests {
 
     #[test]
     fn test_stats_token_usage() {
-        let stats = Stats::new();
+        let stats = fresh_stats();
         stats.record_request("claude-sonnet-4-5", "/v1/messages");
         stats.record_token_usage("claude-sonnet-4-5", 100, 200, 50);
         stats.record_token_usage("claude-sonnet-4-5", 150, 300, 0);
@@ -560,7 +572,7 @@ mod tests {
 
     #[test]
     fn test_stats_token_json() {
-        let stats = Stats::new();
+        let stats = fresh_stats();
         stats.record_request("test-model", "/v1/messages");
         stats.record_token_usage("test-model", 100, 200, 0);
 
