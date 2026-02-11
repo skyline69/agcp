@@ -104,6 +104,7 @@ fn read_addr() -> Option<String> {
 }
 
 /// Write the daemon's actual listening address to the addr file.
+#[cfg(unix)]
 fn write_addr(host: &str, port: u16) {
     let addr_path = get_addr_path();
     if let Some(parent) = addr_path.parent() {
