@@ -33,6 +33,87 @@ agcp status                 # Show proxy status
 agcp doctor                 # Diagnose configuration
 ```
 
+## Git Workflow
+
+### Commit Message Format
+
+Use Conventional Commits:
+
+```text
+<type>(<scope>): <summary>
+```
+
+- `type`: required
+- `scope`: optional but preferred (module/area like `tui`, `cloudcode`, `server`, `docs`)
+- `summary`: imperative mood, lower-case start, no trailing period, ideally <= 72 chars
+
+Examples:
+
+- `feat(tui): show popup when Gemini access is disabled`
+- `fix(cloudcode): map disabled-account 403 to clear error`
+- `docs(agents): add git workflow conventions`
+
+### Allowed Commit Types
+
+- `feat`: new user-facing behavior
+- `fix`: bug fix
+- `refactor`: internal code change without behavior change
+- `perf`: performance improvement
+- `test`: add or update tests
+- `docs`: documentation-only changes
+- `chore`: maintenance, tooling, cleanup
+- `ci`: CI pipeline/workflow changes
+- `build`: build system/dependency changes
+- `style`: formatting-only (no logic change)
+- `revert`: revert a prior commit
+
+For breaking changes, use `!`:
+
+- `feat(api)!: rename responses endpoint fields`
+
+And include a `BREAKING CHANGE:` footer in the commit body.
+
+### Branch Naming
+
+Use short descriptive names:
+
+- `feat/<short-topic>`
+- `fix/<short-topic>`
+- `chore/<short-topic>`
+- `docs/<short-topic>`
+
+Examples:
+
+- `feat/tui-runtime-warning-popup`
+- `fix/gemini-disabled-403-mapping`
+
+### Commit Hygiene
+
+- Keep one logical change per commit.
+- Run verification before commit:
+  - `cargo fmt`
+  - `cargo clippy -- -D warnings`
+  - `cargo test`
+- Do not commit secrets, tokens, local config, or logs.
+- Do not amend/rewrite history unless explicitly requested.
+
+### Pull Requests
+
+Use this PR structure:
+
+```markdown
+## Summary
+- What changed
+- Why it changed
+
+## Verification
+- cargo fmt
+- cargo clippy -- -D warnings
+- cargo test
+```
+
+Prefer small PRs with clear scope and explicit verification output.
+
 ## Architecture
 
 ```
