@@ -25,6 +25,9 @@ pub const ENDPOINTS: &[&str] = &[
     "https://cloudcode-pa.googleapis.com",
 ];
 
+const GEMINI_DISABLED_ERROR_MARKER: &str = "gemini has been disabled in this account";
+const GEMINI_DISABLED_WARNING: &str = "Gemini has been disabled in this Google account for a Terms of Service violation. Requests cannot continue until access is restored. Contact Google Cloud Support or email gemini-code-assist-user-feedback@google.com.";
+
 /// HTTP client for Google Cloud Code API with retry logic and rate limiting.
 ///
 /// Features:
@@ -597,6 +600,15 @@ fn map_http_error(status: u16, message: &str, model: Option<&str>) -> Error {
             size: 0,
             max: 10 * 1024 * 1024,
         }),
+        403 if message
+            .to_ascii_lowercase()
+            .contains(GEMINI_DISABLED_ERROR_MARKER) =>
+        {
+            Error::Api(ApiError::ServerError {
+                status,
+                message: GEMINI_DISABLED_WARNING.to_string(),
+            })
+        }
         500..=599 => Error::Api(ApiError::ServerError {
             status,
             message: message.to_string(),
@@ -628,5 +640,36 @@ fn map_google_error(code: i32, message: &str) -> Error {
             status: code as u16,
             message: message.to_string(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_map_http_error_gemini_disabled_returns_403_warning() {
+        let upstream_error = r#"{
+  "error": {
+    "code": 403,
+    "message": "Gemini has been disabled in this account for violation of Terms of\n\t\tService. If you believe this is an error, please contact Google Cloud Support, or email\n\t\tgemini-code-assist-user-feedback@google.com.",
+    "status": "PERMISSION_DENIED"
+  }
+}"#;
+
+        let error = map_http_error(403, upstream_error, Some("gpt-5.3-codex"));
+
+        match error {
+            Error::Api(ApiError::ServerError { status, message }) => {
+                assert_eq!(status, 403);
+                assert!(message.contains("Gemini has been disabled"));
+                assert!(message.contains("Google Cloud Support"));
+                assert!(
+                    !message.contains("\"error\":"),
+                    "message should be concise, not raw JSON"
+                );
+            }
+            other => panic!("expected 403 server error warning, got {other:?}"),
+        }
     }
 }

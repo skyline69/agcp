@@ -23,6 +23,12 @@ use super::theme;
 const MIN_WIDTH: u16 = 60;
 /// Minimum terminal height for proper display
 const MIN_HEIGHT: u16 = 15;
+/// Marker used by Google's raw 403 payload.
+const GEMINI_DISABLED_MARKER_RAW: &str = "gemini has been disabled in this account";
+/// Marker used by AGCP's mapped 403 message.
+const GEMINI_DISABLED_MARKER_MAPPED: &str = "gemini has been disabled in this google account";
+/// Popup message shown when Gemini access is disabled on the account.
+const GEMINI_DISABLED_WARNING_MESSAGE: &str = "Google has disabled Gemini access for this account due to a Terms of Service violation. Requests will continue to fail until access is restored. Contact Google Cloud Support or email gemini-code-assist-user-feedback@google.com.";
 
 /// Linearly interpolate between two u64 values.
 fn lerp_u64(from: u64, to: u64, t: f64) -> u64 {
@@ -31,6 +37,19 @@ fn lerp_u64(from: u64, to: u64, t: f64) -> u64 {
     } else {
         from - ((from - to) as f64 * t) as u64
     }
+}
+
+/// Detect a high-priority runtime warning from newly appended log entries.
+fn detect_runtime_warning_message(entries: &[super::data::LogEntry]) -> Option<&'static str> {
+    for entry in entries.iter().rev() {
+        let line = entry.line.to_ascii_lowercase();
+        if line.contains(GEMINI_DISABLED_MARKER_RAW) || line.contains(GEMINI_DISABLED_MARKER_MAPPED)
+        {
+            return Some(GEMINI_DISABLED_WARNING_MESSAGE);
+        }
+    }
+
+    None
 }
 
 /// Available tabs in the TUI
@@ -254,6 +273,8 @@ pub struct App {
     pub startup_warnings: Vec<super::widgets::StartupWarning>,
     /// Whether to show the startup warnings popup
     pub show_startup_warnings: bool,
+    /// Runtime warning popup message for high-priority live errors
+    pub runtime_warning_message: Option<String>,
     /// Receiver for background startup warnings collection
     startup_warnings_receiver: Option<mpsc::Receiver<Vec<super::widgets::StartupWarning>>>,
     /// About page: cached inner area for mouse detection
@@ -364,10 +385,12 @@ impl App {
         let log_path = super::data::DataProvider::get_log_path();
 
         // Single pass: read last N log lines and find server start line
-        let (logs, server_start_line) =
+        let (mut logs, server_start_line) =
             super::log_reader::read_last_lines_and_start(&log_path, 500);
         let daemon_start_time =
             server_start_line.and_then(|line| super::data::parse_daemon_start_from_line(&line));
+        let runtime_warning_message =
+            detect_runtime_warning_message(logs.make_contiguous()).map(str::to_string);
 
         let log_count = logs.len();
 
@@ -423,6 +446,7 @@ impl App {
             // Startup warnings deferred -- populated by background thread
             startup_warnings: Vec::new(),
             show_startup_warnings: false,
+            runtime_warning_message,
             startup_warnings_receiver: None,
             about_area: Rect::default(),
             about_link_hovered: false,
@@ -500,6 +524,9 @@ impl App {
     /// Refresh logs from file and update cached stats
     pub fn refresh_logs(&mut self) {
         let new_entries = self.log_tailer.read_new_lines();
+        if let Some(message) = detect_runtime_warning_message(&new_entries) {
+            self.runtime_warning_message = Some(message.to_string());
+        }
         let new_count = new_entries.len();
         super::log_reader::append_entries(&mut self.logs, new_entries);
 
@@ -1270,6 +1297,17 @@ impl App {
             match code {
                 KeyCode::Enter | KeyCode::Esc => {
                     self.show_startup_warnings = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // Handle runtime warning popup (blocks other input)
+        if self.runtime_warning_message.is_some() {
+            match code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    self.runtime_warning_message = None;
                 }
                 _ => {}
             }
@@ -2741,6 +2779,8 @@ fn render(frame: &mut Frame, app: &mut App, elapsed: Duration) {
     // Startup warnings popup (rendered on top of everything)
     if app.show_startup_warnings {
         super::widgets::startup_warnings::render(frame, area, &app.startup_warnings);
+    } else if let Some(message) = &app.runtime_warning_message {
+        super::widgets::runtime_warning::render(frame, area, message);
     }
 
     // Process effects
@@ -2771,4 +2811,45 @@ fn calculate_tab_areas(tabs_area: Rect) -> Vec<Rect> {
     }
 
     areas
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_runtime_warning_message_raw_gemini_disabled_log() {
+        let entries = vec![super::super::data::LogEntry::new(
+            r#"WARN Request error status=502 error=http error: HTTP 403: {"error":{"code":403,"message":"Gemini has been disabled in this account for violation of Terms of Service.","status":"PERMISSION_DENIED"}}"#.to_string(),
+        )];
+
+        let warning = detect_runtime_warning_message(&entries);
+        assert!(
+            warning.is_some(),
+            "expected runtime warning for raw Gemini-disabled 403"
+        );
+    }
+
+    #[test]
+    fn test_detect_runtime_warning_message_mapped_gemini_disabled_log() {
+        let entries = vec![super::super::data::LogEntry::new(
+            "WARN Request error status=403 error=server error (403): Gemini has been disabled in this Google account for a Terms of Service violation.".to_string(),
+        )];
+
+        let warning = detect_runtime_warning_message(&entries);
+        assert!(
+            warning.is_some(),
+            "expected runtime warning for mapped Gemini-disabled 403"
+        );
+    }
+
+    #[test]
+    fn test_detect_runtime_warning_message_ignores_other_errors() {
+        let entries = vec![super::super::data::LogEntry::new(
+            "WARN Request error status=429 error=rate limited".to_string(),
+        )];
+
+        let warning = detect_runtime_warning_message(&entries);
+        assert!(warning.is_none());
+    }
 }

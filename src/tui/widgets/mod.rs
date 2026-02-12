@@ -3,6 +3,7 @@ mod donut_chart;
 mod footer;
 mod header;
 pub mod help;
+pub mod runtime_warning;
 pub mod startup_warnings;
 mod stats_panel;
 mod status_panel;
