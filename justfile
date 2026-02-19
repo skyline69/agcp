@@ -18,7 +18,7 @@ run:
 
 # Run with custom options (e.g. `just run-opts --port 3000 --host 0.0.0.0 --debug`)
 run-opts *args:
-    cargo run --release -- {{args}}
+    cargo run --release -- {{ args }}
 
 # First-time setup: OAuth login
 login:
@@ -30,7 +30,7 @@ test:
 
 # Run a specific test (e.g. `just test-one test_model_family`)
 test-one name:
-    cargo test {{name}}
+    cargo test {{ name }}
 
 # Format source code
 fmt:
