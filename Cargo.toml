@@ -95,7 +95,7 @@ fs2 = "0.4"
 # Terminal UI
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
-tachyonfx = "0.23"
+tachyonfx = "0.24"
 
 # Unix process management (daemon mode)
 [target.'cfg(unix)'.dependencies]
