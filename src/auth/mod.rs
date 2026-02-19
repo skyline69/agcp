@@ -104,28 +104,21 @@ impl HttpClient {
         content_type: &str,
         body: &[u8],
     ) -> Result<Vec<u8>, String> {
-        let os = std::env::consts::OS;
-        let arch = std::env::consts::ARCH;
-        let user_agent = format!(
-            "antigravity/{} {}/{}",
-            crate::cloudcode::request::UPSTREAM_VERSION,
-            os,
-            arch
-        );
-
         let client_metadata = r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#;
 
-        let req = Request::builder()
+        let mut req = Request::builder()
             .method("POST")
             .uri(url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", content_type)
-            .header("User-Agent", user_agent)
-            .header(
-                "X-Goog-Api-Client",
-                "google-cloud-sdk vscode_cloudshelleditor/0.1",
-            )
-            .header("Client-Metadata", client_metadata)
+            .header("Client-Metadata", client_metadata);
+
+        // Inject full identity camouflage headers
+        for (name, value) in crate::fingerprint::build_fingerprint_headers() {
+            req = req.header(name.as_ref(), value.as_ref());
+        }
+
+        let req = req
             .body(Full::new(Bytes::from(body.to_vec())))
             .map_err(|e| e.to_string())?;
 
@@ -154,27 +147,18 @@ impl HttpClient {
         body: &[u8],
         headers: &[(&str, &str)],
     ) -> Result<Vec<u8>, String> {
-        let os = std::env::consts::OS;
-        let arch = std::env::consts::ARCH;
-        let user_agent = format!(
-            "antigravity/{} {}/{}",
-            crate::cloudcode::request::UPSTREAM_VERSION,
-            os,
-            arch
-        );
-
         let client_metadata = r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#;
 
         let mut req = Request::builder()
             .method("POST")
             .uri(url)
             .header("Content-Type", content_type)
-            .header("User-Agent", user_agent)
-            .header(
-                "X-Goog-Api-Client",
-                "google-cloud-sdk vscode_cloudshelleditor/0.1",
-            )
             .header("Client-Metadata", client_metadata);
+
+        // Inject full identity camouflage headers
+        for (name, value) in crate::fingerprint::build_fingerprint_headers() {
+            req = req.header(name.as_ref(), value.as_ref());
+        }
 
         for (name, value) in headers {
             req = req.header(*name, *value);

@@ -11,6 +11,7 @@ mod tui;
 
 mod auth;
 mod cloudcode;
+mod fingerprint;
 mod format;
 
 use std::env;

@@ -18,23 +18,12 @@ static SYSTEM_INSTRUCTION_IGNORE: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// The upstream Antigravity client version to impersonate.
-/// This must be kept up to date with the latest Antigravity release
-/// to avoid Google's version gate ("This version of Antigravity is no longer supported").
-pub const UPSTREAM_VERSION: &str = "1.16.5";
-
-static USER_AGENT: LazyLock<String> = LazyLock::new(|| {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    format!("antigravity/{} {}/{}", UPSTREAM_VERSION, os, arch)
-});
-
 pub fn build_headers(
     access_token: &str,
     model: &str,
     streaming: bool,
 ) -> Vec<(Cow<'static, str>, Cow<'static, str>)> {
-    let mut headers = Vec::with_capacity(7);
+    let mut headers = Vec::with_capacity(10);
     headers.push((
         Cow::Borrowed("Authorization"),
         Cow::Owned(format!("Bearer {}", access_token)),
@@ -43,11 +32,12 @@ pub fn build_headers(
         Cow::Borrowed("Content-Type"),
         Cow::Borrowed("application/json"),
     ));
-    headers.push((Cow::Borrowed("User-Agent"), Cow::Owned(USER_AGENT.clone())));
-    headers.push((
-        Cow::Borrowed("X-Goog-Api-Client"),
-        Cow::Borrowed("google-cloud-sdk vscode_cloudshelleditor/0.1"),
-    ));
+
+    // Full identity camouflage headers from the fingerprint module
+    for (name, value) in crate::fingerprint::build_fingerprint_headers() {
+        headers.push((name, value));
+    }
+
     headers.push((
         Cow::Borrowed("Client-Metadata"),
         Cow::Borrowed(r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#),
