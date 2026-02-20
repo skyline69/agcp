@@ -78,6 +78,25 @@ fn detect_local_version() -> Option<String> {
         }
     }
 
+    // Windows: check %LOCALAPPDATA%\Programs\Antigravity\resources\app\package.json
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_data) = dirs::data_local_dir() {
+            let pkg = local_data
+                .join("Programs")
+                .join("Antigravity")
+                .join("resources")
+                .join("app")
+                .join("package.json");
+            if let Ok(content) = std::fs::read_to_string(&pkg)
+                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&content)
+                && let Some(v) = json.get("version").and_then(|v| v.as_str())
+            {
+                return Some(v.to_string());
+            }
+        }
+    }
+
     None
 }
 
