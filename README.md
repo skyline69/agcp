@@ -42,6 +42,7 @@ A blazing-fast Rust proxy that translates Anthropic's Claude API to Google's Clo
 - **Response Caching** - Cache non-streaming responses to reduce quota usage
 - **Interactive TUI** - Beautiful terminal UI for monitoring and configuration
 - **Background Daemon** - Runs quietly in the background
+- **Client Identity Camouflage** - Spoofs the full Electron client fingerprint (User-Agent, `X-Client-Name/Version`, `X-Machine-Id`, `X-VSCode-SessionId`) to match the official Antigravity desktop app
 
 ## Quick Start
 
@@ -331,6 +332,7 @@ agcp logs      # View logs
 | `~/.config/agcp/config.toml` | Configuration file |
 | `~/.config/agcp/accounts.json` | Account credentials |
 | `~/.config/agcp/agcp.log` | Server logs |
+| `~/.config/agcp/machineid` | Persistent machine UUID for client identity camouflage |
 
 ## License
 

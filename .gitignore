@@ -29,3 +29,7 @@ Thumbs.db
 # AI agent working files
 docs/plans/
 .opencode/
+
+# Node / Bun (Tailwind CSS build tooling)
+node_modules/
+bun.lockb

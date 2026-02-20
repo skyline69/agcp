@@ -46,3 +46,7 @@ check: fmt lint
 # Clean build artifacts
 clean:
     cargo clean
+
+# Build Tailwind CSS for the docs site
+css:
+    bunx @tailwindcss/cli -i docs/input.css -o docs/style.css --minify
