@@ -509,9 +509,9 @@ mod tests {
     #[test]
     fn test_stats_record_request() {
         let stats = fresh_stats();
-        stats.record_request("claude-sonnet-4-5", "/v1/messages");
-        stats.record_request("claude-sonnet-4-5", "/v1/messages");
-        stats.record_request("claude-opus-4-5", "/v1/chat/completions");
+        stats.record_request("claude-sonnet-4-6-thinking", "/v1/messages");
+        stats.record_request("claude-sonnet-4-6-thinking", "/v1/messages");
+        stats.record_request("claude-opus-4-6-thinking", "/v1/chat/completions");
 
         let summary = stats.summary();
         assert_eq!(summary.total_requests, 3);
@@ -541,9 +541,9 @@ mod tests {
     #[test]
     fn test_stats_token_usage() {
         let stats = fresh_stats();
-        stats.record_request("claude-sonnet-4-5", "/v1/messages");
-        stats.record_token_usage("claude-sonnet-4-5", 100, 200, 50);
-        stats.record_token_usage("claude-sonnet-4-5", 150, 300, 0);
+        stats.record_request("claude-sonnet-4-6-thinking", "/v1/messages");
+        stats.record_token_usage("claude-sonnet-4-6-thinking", 100, 200, 50);
+        stats.record_token_usage("claude-sonnet-4-6-thinking", 150, 300, 0);
         stats.record_token_usage("gemini-3-flash", 80, 160, 0);
 
         let summary = stats.summary();
@@ -552,7 +552,7 @@ mod tests {
         let sonnet = summary
             .models
             .iter()
-            .find(|m| m.model == "claude-sonnet-4-5")
+            .find(|m| m.model == "claude-sonnet-4-6-thinking")
             .unwrap();
         assert_eq!(sonnet.input_tokens, 250);
         assert_eq!(sonnet.output_tokens, 500);
@@ -566,7 +566,7 @@ mod tests {
         // Check events
         let events = stats.get_token_events();
         assert_eq!(events.len(), 3);
-        assert_eq!(events[0].model, "claude-sonnet-4-5");
+        assert_eq!(events[0].model, "claude-sonnet-4-6-thinking");
         assert_eq!(events[2].model, "gemini-3-flash");
     }
 

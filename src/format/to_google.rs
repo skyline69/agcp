@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn test_convert_simple_request() {
-        let request = create_test_request("claude-sonnet-4-5", "Hello");
+        let request = create_test_request("claude-sonnet-4-6-thinking", "Hello");
         let google_req = convert_request(&request);
 
         assert_eq!(google_req.contents.len(), 1);
@@ -506,12 +506,12 @@ mod tests {
 
         let gen_config = google_req.generation_config.unwrap();
         assert_eq!(gen_config.max_output_tokens, Some(1024));
-        assert!(gen_config.thinking_config.is_none()); // Non-thinking model
+        assert!(gen_config.thinking_config.is_some()); // Sonnet 4.6 defaults to thinking
     }
 
     #[test]
     fn test_convert_thinking_model_request() {
-        let request = create_test_request("claude-opus-4-5-thinking", "Think about this");
+        let request = create_test_request("claude-opus-4-6-thinking", "Think about this");
         let google_req = convert_request(&request);
 
         let gen_config = google_req.generation_config.unwrap();
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_convert_system_prompt() {
-        let mut request = create_test_request("claude-sonnet-4-5", "Hello");
+        let mut request = create_test_request("claude-sonnet-4-6-thinking", "Hello");
         request.system = Some(SystemPrompt::Text(
             "You are a helpful assistant".to_string(),
         ));
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn test_convert_with_tools() {
-        let mut request = create_test_request("claude-sonnet-4-5", "Use the tool");
+        let mut request = create_test_request("claude-sonnet-4-6-thinking", "Use the tool");
         request.tools = Some(vec![Tool {
             name: "get_weather".to_string(),
             description: Some("Get weather for a location".to_string()),

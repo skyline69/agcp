@@ -179,10 +179,10 @@ mod tests {
     #[test]
     fn test_convert_simple_response() {
         let response = create_test_response("Hello, world!", Some("STOP"));
-        let result = convert_response(&response, "claude-sonnet-4-5", "req_123");
+        let result = convert_response(&response, "claude-sonnet-4-6-thinking", "req_123");
 
         assert_eq!(result.id, "req_123");
-        assert_eq!(result.model, "claude-sonnet-4-5");
+        assert_eq!(result.model, "claude-sonnet-4-6-thinking");
         assert_eq!(result.role, Role::Assistant);
         assert_eq!(result.content.len(), 1);
 
@@ -262,7 +262,7 @@ mod tests {
                     message_type: "message".to_string(),
                     role: Role::Assistant,
                     content: vec![],
-                    model: "claude-sonnet-4-5".to_string(),
+                    model: "claude-sonnet-4-6-thinking".to_string(),
                     stop_reason: None,
                     stop_sequence: None,
                     usage: Usage {
@@ -302,7 +302,8 @@ mod tests {
             },
         ];
 
-        let result = build_response_from_events(&events, "claude-sonnet-4-5", "req_stream");
+        let result =
+            build_response_from_events(&events, "claude-sonnet-4-6-thinking", "req_stream");
 
         assert_eq!(result.id, "req_stream");
         assert_eq!(result.content.len(), 1);

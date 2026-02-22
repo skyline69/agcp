@@ -7,9 +7,7 @@ use crate::config::MappingRule;
 pub enum Model {
     // Claude models
     ClaudeOpus4_6Thinking,
-    ClaudeOpus4_5Thinking,
-    ClaudeSonnet4_5,
-    ClaudeSonnet4_5Thinking,
+    ClaudeSonnet4_6Thinking,
     // Gemini 3 models
     Gemini3Flash,
     Gemini3ProHigh,
@@ -22,9 +20,7 @@ impl Model {
     pub fn anthropic_id(&self) -> &'static str {
         match self {
             Model::ClaudeOpus4_6Thinking => "claude-opus-4-6-thinking",
-            Model::ClaudeOpus4_5Thinking => "claude-opus-4-5-thinking",
-            Model::ClaudeSonnet4_5 => "claude-sonnet-4-5",
-            Model::ClaudeSonnet4_5Thinking => "claude-sonnet-4-5-thinking",
+            Model::ClaudeSonnet4_6Thinking => "claude-sonnet-4-6-thinking",
             Model::Gemini3Flash => "gemini-3-flash",
             Model::Gemini3ProHigh => "gemini-3-pro-high",
             Model::Gemini3ProLow => "gemini-3-pro-low",
@@ -35,9 +31,7 @@ impl Model {
     pub fn all() -> &'static [Model] {
         &[
             Model::ClaudeOpus4_6Thinking,
-            Model::ClaudeOpus4_5Thinking,
-            Model::ClaudeSonnet4_5,
-            Model::ClaudeSonnet4_5Thinking,
+            Model::ClaudeSonnet4_6Thinking,
             Model::Gemini3Flash,
             Model::Gemini3ProHigh,
             Model::Gemini3ProLow,
@@ -83,20 +77,32 @@ pub fn resolve_model_alias(model: &str) -> &str {
     {
         return "claude-opus-4-6-thinking";
     }
+    // Opus 4.5 is no longer available, redirect to Opus 4.6
     if starts_with_ignore_case(model, "claude-opus-4-5")
         || starts_with_ignore_case(model, "claude-opus-4.5")
     {
-        return "claude-opus-4-5-thinking";
+        return "claude-opus-4-6-thinking";
     }
+    if starts_with_ignore_case(model, "claude-sonnet-4-6-thinking")
+        || starts_with_ignore_case(model, "claude-sonnet-4.6-thinking")
+    {
+        return "claude-sonnet-4-6-thinking";
+    }
+    if starts_with_ignore_case(model, "claude-sonnet-4-6")
+        || starts_with_ignore_case(model, "claude-sonnet-4.6")
+    {
+        return "claude-sonnet-4-6-thinking";
+    }
+    // Sonnet 4.5 is no longer available, redirect to Sonnet 4.6
     if starts_with_ignore_case(model, "claude-sonnet-4-5-thinking")
         || starts_with_ignore_case(model, "claude-sonnet-4.5-thinking")
     {
-        return "claude-sonnet-4-5-thinking";
+        return "claude-sonnet-4-6-thinking";
     }
     if starts_with_ignore_case(model, "claude-sonnet-4-5")
         || starts_with_ignore_case(model, "claude-sonnet-4.5")
     {
-        return "claude-sonnet-4-5";
+        return "claude-sonnet-4-6-thinking";
     }
     // Claude 3.5 Haiku is not available on Cloud Code, map to Gemini 3 Flash
     if starts_with_ignore_case(model, "claude-3-5-haiku")
@@ -109,11 +115,11 @@ pub fn resolve_model_alias(model: &str) -> &str {
     let lower = model.to_ascii_lowercase();
 
     match lower.as_str() {
-        // Claude aliases - default to 4.6, fallback to 4.5 if unavailable
+        // Claude aliases - default to 4.6 family
         "opus" | "opus-thinking" | "claude-opus" => "claude-opus-4-6-thinking",
-        "opus-4-5" | "opus-4.5" | "claude-opus-4-5" => "claude-opus-4-5-thinking",
-        "sonnet" | "claude-sonnet" => "claude-sonnet-4-5",
-        "sonnet-thinking" | "claude-sonnet-thinking" => "claude-sonnet-4-5-thinking",
+        "opus-4-5" | "opus-4.5" | "claude-opus-4-5" => "claude-opus-4-6-thinking",
+        "sonnet" | "claude-sonnet" => "claude-sonnet-4-6-thinking",
+        "sonnet-thinking" | "claude-sonnet-thinking" => "claude-sonnet-4-6-thinking",
         // Haiku is not available, map to Gemini 3 Flash
         "haiku" | "claude-haiku" | "claude-haiku-4-5" => "gemini-3-flash",
 
@@ -144,13 +150,15 @@ pub fn resolve_model_alias(model: &str) -> &str {
 pub fn get_fallback_model(model: &str) -> Option<&'static str> {
     match model {
         "gemini-3-pro-high" => Some("claude-opus-4-6-thinking"),
-        "gemini-3-pro-low" => Some("claude-sonnet-4-5"),
-        "gemini-3-flash" => Some("claude-sonnet-4-5-thinking"),
-        // Opus 4.6 falls back to 4.5, which falls back to gemini-3-pro-high
-        "claude-opus-4-6-thinking" => Some("claude-opus-4-5-thinking"),
-        "claude-opus-4-5-thinking" => Some("gemini-3-pro-high"),
-        "claude-sonnet-4-5-thinking" => Some("gemini-3-flash"),
-        "claude-sonnet-4-5" => Some("gemini-3-flash"),
+        "gemini-3-pro-low" => Some("claude-sonnet-4-6-thinking"),
+        "gemini-3-flash" => Some("claude-sonnet-4-6-thinking"),
+        "claude-opus-4-6-thinking" => Some("claude-sonnet-4-6-thinking"),
+        "claude-sonnet-4-6-thinking" => Some("gemini-3-flash"),
+        "claude-sonnet-4-6" => Some("gemini-3-flash"),
+        // Compatibility for legacy 4.5 names
+        "claude-opus-4-5-thinking" => Some("claude-opus-4-6-thinking"),
+        "claude-sonnet-4-5-thinking" => Some("claude-sonnet-4-6-thinking"),
+        "claude-sonnet-4-5" => Some("claude-sonnet-4-6-thinking"),
         "gpt-oss-120b-medium" => Some("gemini-3-flash"),
         _ => None,
     }
@@ -182,7 +190,7 @@ pub fn is_thinking_model(model_name: &str) -> bool {
 
 /// Simple glob pattern matching supporting `*` as a wildcard.
 /// - `*` at end: prefix match (e.g. "gpt-4*" matches "gpt-4o-mini")
-/// - `*` at start: suffix match (e.g. "*-thinking" matches "claude-opus-4-5-thinking")
+/// - `*` at start: suffix match (e.g. "*-thinking" matches "claude-opus-4-6-thinking")
 /// - `*` in middle: splits on `*` and checks prefix + suffix
 /// - No `*`: exact match (case-insensitive)
 pub fn glob_match(pattern: &str, input: &str) -> bool {
@@ -338,7 +346,7 @@ impl MappingPreset {
                 },
                 MappingRule {
                     from: "claude-3-5-sonnet-*".into(),
-                    to: "claude-sonnet-4-5".into(),
+                    to: "claude-sonnet-4-6-thinking".into(),
                 },
                 MappingRule {
                     from: "claude-opus-4-*".into(),
@@ -384,7 +392,7 @@ impl MappingPreset {
                 },
                 MappingRule {
                     from: "claude-3-5-sonnet-*".into(),
-                    to: "claude-sonnet-4-5-thinking".into(),
+                    to: "claude-sonnet-4-6-thinking".into(),
                 },
                 MappingRule {
                     from: "claude-opus-4-*".into(),
@@ -426,7 +434,7 @@ impl MappingPreset {
                 },
                 MappingRule {
                     from: "claude-3-opus-*".into(),
-                    to: "claude-sonnet-4-5".into(),
+                    to: "claude-sonnet-4-6-thinking".into(),
                 },
                 MappingRule {
                     from: "claude-3-5-sonnet-*".into(),
@@ -434,7 +442,7 @@ impl MappingPreset {
                 },
                 MappingRule {
                     from: "claude-opus-4-*".into(),
-                    to: "claude-sonnet-4-5".into(),
+                    to: "claude-sonnet-4-6-thinking".into(),
                 },
             ],
             MappingPreset::None | MappingPreset::Custom => vec![],
@@ -453,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_model_family() {
-        assert_eq!(get_model_family("claude-sonnet-4-5"), "claude");
+        assert_eq!(get_model_family("claude-sonnet-4-6-thinking"), "claude");
         assert_eq!(get_model_family("gemini-3-flash"), "gemini");
         assert_eq!(get_model_family("gpt-oss-120b-medium"), "gpt-oss");
         assert_eq!(get_model_family("unknown-model"), "unknown");
@@ -463,6 +471,8 @@ mod tests {
     fn test_is_thinking() {
         // Models with explicit "thinking" in name
         assert!(is_thinking_model("claude-opus-4-6-thinking"));
+        assert!(is_thinking_model("claude-sonnet-4-6-thinking"));
+        // Legacy 4.5 inputs are still accepted and remapped
         assert!(is_thinking_model("claude-opus-4-5-thinking"));
         assert!(is_thinking_model("claude-sonnet-4-5-thinking"));
 
@@ -472,7 +482,7 @@ mod tests {
         assert!(is_thinking_model("gemini-4-flash")); // Future-proof
 
         // Non-thinking models
-        assert!(!is_thinking_model("claude-sonnet-4-5")); // No "thinking" in name
+        assert!(!is_thinking_model("claude-sonnet-4-6")); // No "thinking" in name
         assert!(!is_thinking_model("gpt-oss-120b-medium")); // Not a thinking model
     }
 
@@ -480,11 +490,11 @@ mod tests {
     fn test_model_aliases() {
         // Claude aliases - opus now defaults to 4.6
         assert_eq!(resolve_model_alias("opus"), "claude-opus-4-6-thinking");
-        assert_eq!(resolve_model_alias("opus-4-5"), "claude-opus-4-5-thinking");
-        assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-5");
+        assert_eq!(resolve_model_alias("opus-4-5"), "claude-opus-4-6-thinking");
+        assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6-thinking");
         assert_eq!(
             resolve_model_alias("sonnet-thinking"),
-            "claude-sonnet-4-5-thinking"
+            "claude-sonnet-4-6-thinking"
         );
 
         // Gemini aliases (2.5 aliases now redirect to Gemini 3)
@@ -504,7 +514,19 @@ mod tests {
         );
         assert_eq!(
             resolve_model_alias("claude-opus-4-5-thinking"),
-            "claude-opus-4-5-thinking"
+            "claude-opus-4-6-thinking"
+        );
+        assert_eq!(
+            resolve_model_alias("claude-sonnet-4-5"),
+            "claude-sonnet-4-6-thinking"
+        );
+        assert_eq!(
+            resolve_model_alias("claude-sonnet-4-5-thinking"),
+            "claude-sonnet-4-6-thinking"
+        );
+        assert_eq!(
+            resolve_model_alias("claude-sonnet-4-6"),
+            "claude-sonnet-4-6-thinking"
         );
         assert_eq!(resolve_model_alias("gemini-3-flash"), "gemini-3-flash");
         assert_eq!(
@@ -538,22 +560,34 @@ mod tests {
             Some("claude-opus-4-6-thinking")
         );
         assert_eq!(
+            get_fallback_model("gemini-3-pro-low"),
+            Some("claude-sonnet-4-6-thinking")
+        );
+        assert_eq!(
             get_fallback_model("gemini-3-flash"),
-            Some("claude-sonnet-4-5-thinking")
+            Some("claude-sonnet-4-6-thinking")
         );
 
-        // Claude model fallbacks: 4.6 -> 4.5 -> gemini
+        // Claude model fallbacks: 4.6 -> gemini, legacy 4.5 -> 4.6
         assert_eq!(
             get_fallback_model("claude-opus-4-6-thinking"),
-            Some("claude-opus-4-5-thinking")
+            Some("claude-sonnet-4-6-thinking")
         );
         assert_eq!(
             get_fallback_model("claude-opus-4-5-thinking"),
-            Some("gemini-3-pro-high")
+            Some("claude-opus-4-6-thinking")
+        );
+        assert_eq!(
+            get_fallback_model("claude-sonnet-4-6-thinking"),
+            Some("gemini-3-flash")
         );
         assert_eq!(
             get_fallback_model("claude-sonnet-4-5-thinking"),
-            Some("gemini-3-flash")
+            Some("claude-sonnet-4-6-thinking")
+        );
+        assert_eq!(
+            get_fallback_model("claude-sonnet-4-5"),
+            Some("claude-sonnet-4-6-thinking")
         );
 
         // GPT-OSS fallback
@@ -576,12 +610,12 @@ mod tests {
         assert!(!glob_match("gpt-4*", "gpt-3.5-turbo"));
 
         // Prefix wildcard (suffix match)
-        assert!(glob_match("*-thinking", "claude-opus-4-5-thinking"));
-        assert!(!glob_match("*-thinking", "claude-sonnet-4-5"));
+        assert!(glob_match("*-thinking", "claude-opus-4-6-thinking"));
+        assert!(!glob_match("*-thinking", "claude-sonnet-4-6"));
 
         // Middle wildcard
-        assert!(glob_match("claude-*-thinking", "claude-opus-4-5-thinking"));
-        assert!(!glob_match("claude-*-thinking", "claude-sonnet-4-5"));
+        assert!(glob_match("claude-*-thinking", "claude-opus-4-6-thinking"));
+        assert!(!glob_match("claude-*-thinking", "claude-sonnet-4-6"));
 
         // Exact match
         assert!(glob_match("gpt-4", "gpt-4"));
@@ -597,7 +631,7 @@ mod tests {
         assert!(!glob_match("claude-3-haiku-*", "claude-3-5-haiku-20241022")); // 3-haiku does NOT match 3-5-haiku
         assert!(glob_match("o1-*", "o1-preview"));
         assert!(glob_match("o3-*", "o3-mini"));
-        assert!(glob_match("claude-opus-4-*", "claude-opus-4-5-thinking"));
+        assert!(glob_match("claude-opus-4-*", "claude-opus-4-6-thinking"));
     }
 
     #[test]

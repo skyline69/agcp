@@ -27,6 +27,8 @@ const MIN_HEIGHT: u16 = 15;
 const GEMINI_DISABLED_MARKER_RAW: &str = "gemini has been disabled in this account";
 /// Marker used by AGCP's mapped 403 message.
 const GEMINI_DISABLED_MARKER_MAPPED: &str = "gemini has been disabled in this google account";
+/// Marker for daemon startup boundary in logs.
+const SERVER_LISTENING_MARKER: &str = "server listening";
 /// Popup message shown when Gemini access is disabled on the account.
 const GEMINI_DISABLED_WARNING_MESSAGE: &str = "Google has disabled Gemini access for this account due to a Terms of Service violation. Requests will continue to fail until access is restored. Contact Google Cloud Support or email gemini-code-assist-user-feedback@google.com.";
 
@@ -43,6 +45,10 @@ fn lerp_u64(from: u64, to: u64, t: f64) -> u64 {
 fn detect_runtime_warning_message(entries: &[super::data::LogEntry]) -> Option<&'static str> {
     for entry in entries.iter().rev() {
         let line = entry.line.to_ascii_lowercase();
+        // Runtime warnings are scoped to the current daemon run only.
+        if line.contains(SERVER_LISTENING_MARKER) {
+            break;
+        }
         if line.contains(GEMINI_DISABLED_MARKER_RAW) || line.contains(GEMINI_DISABLED_MARKER_MAPPED)
         {
             return Some(GEMINI_DISABLED_WARNING_MESSAGE);
@@ -50,6 +56,17 @@ fn detect_runtime_warning_message(entries: &[super::data::LogEntry]) -> Option<&
     }
 
     None
+}
+
+/// Detect runtime warning at startup only if the daemon is currently running.
+fn detect_startup_runtime_warning_message(
+    entries: &[super::data::LogEntry],
+    server_running: bool,
+) -> Option<&'static str> {
+    if !server_running {
+        return None;
+    }
+    detect_runtime_warning_message(entries)
 }
 
 /// Available tabs in the TUI
@@ -389,12 +406,16 @@ impl App {
             super::log_reader::read_last_lines_and_start(&log_path, 500);
         let daemon_start_time =
             server_start_line.and_then(|line| super::data::parse_daemon_start_from_line(&line));
-        let runtime_warning_message =
-            detect_runtime_warning_message(logs.make_contiguous()).map(str::to_string);
 
         let log_count = logs.len();
 
         let data = super::data::DataProvider::new();
+        let initial_server_status = data.get_server_status();
+        let runtime_warning_message = detect_startup_runtime_warning_message(
+            logs.make_contiguous(),
+            initial_server_status.is_running(),
+        )
+        .map(str::to_string);
 
         Self {
             running: true,
@@ -453,9 +474,8 @@ impl App {
             update_status: UpdateStatus::NotChecked,
             update_receiver: None,
             tier_refresh_receiver: None,
-            // Server status deferred -- first real check happens via get_cached_server_status()
-            cached_server_status: super::data::ServerStatus::Running,
-            last_status_refresh: Instant::now() - Duration::from_secs(10),
+            cached_server_status: initial_server_status,
+            last_status_refresh: Instant::now(),
             cached_request_count: 0,
             cached_model_usage: Vec::new(),
             cached_rate_history: Vec::new(),
@@ -2851,5 +2871,43 @@ mod tests {
 
         let warning = detect_runtime_warning_message(&entries);
         assert!(warning.is_none());
+    }
+
+    #[test]
+    fn test_detect_runtime_warning_message_ignores_previous_run_warning() {
+        let entries = vec![
+            super::super::data::LogEntry::new(
+                "2026-02-20T00:27:34.720366Z WARN Request error status=403 error=server error (403): Gemini has been disabled in this Google account for a Terms of Service violation.".to_string(),
+            ),
+            super::super::data::LogEntry::new(
+                "2026-02-21T10:00:00.000000Z  INFO Server listening address=127.0.0.1:8080".to_string(),
+            ),
+        ];
+
+        let warning = detect_runtime_warning_message(&entries);
+        assert!(
+            warning.is_none(),
+            "expected previous-run warning to be ignored after a new server start"
+        );
+    }
+
+    #[test]
+    fn test_detect_startup_runtime_warning_message_ignores_when_server_stopped() {
+        let entries = vec![super::super::data::LogEntry::new(
+            "WARN Request error status=403 error=server error (403): Gemini has been disabled in this Google account for a Terms of Service violation.".to_string(),
+        )];
+
+        let warning = detect_startup_runtime_warning_message(&entries, false);
+        assert!(warning.is_none());
+    }
+
+    #[test]
+    fn test_detect_startup_runtime_warning_message_when_server_running() {
+        let entries = vec![super::super::data::LogEntry::new(
+            "WARN Request error status=403 error=server error (403): Gemini has been disabled in this Google account for a Terms of Service violation.".to_string(),
+        )];
+
+        let warning = detect_startup_runtime_warning_message(&entries, true);
+        assert!(warning.is_some());
     }
 }

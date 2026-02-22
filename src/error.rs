@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn test_error_suggestion_quota_exhausted() {
         let err = Error::Api(ApiError::QuotaExhausted {
-            model: "claude-opus-4-5".to_string(),
+            model: "claude-opus-4-6-thinking".to_string(),
             reset_time: "1h".to_string(),
         });
         assert!(err.suggestion().is_some());

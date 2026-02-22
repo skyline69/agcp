@@ -206,8 +206,8 @@ For convenience, you can use these short aliases:
 | Alias | Model |
 |-------|-------|
 | `opus` | claude-opus-4-6-thinking |
-| `sonnet` | claude-sonnet-4-5 |
-| `sonnet-thinking` | claude-sonnet-4-5-thinking |
+| `sonnet` | claude-sonnet-4-6-thinking |
+| `sonnet-thinking` | claude-sonnet-4-6-thinking |
 | `flash` | gemini-3-flash |
 | `pro` | gemini-3-pro-high |
 | `gpt-oss` | gpt-oss-120b-medium |
@@ -216,9 +216,7 @@ For convenience, you can use these short aliases:
 
 ### Claude Models
 - `claude-opus-4-6-thinking`
-- `claude-opus-4-5-thinking`
-- `claude-sonnet-4-5`
-- `claude-sonnet-4-5-thinking`
+- `claude-sonnet-4-6-thinking`
 
 ### Gemini Models
 - `gemini-3-flash`

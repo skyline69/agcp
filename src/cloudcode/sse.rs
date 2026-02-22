@@ -562,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_sse_parser_simple_text() {
-        let mut parser = SseParser::new("claude-sonnet-4-5");
+        let mut parser = SseParser::new("claude-sonnet-4-6-thinking");
 
         // Simulate a simple text response
         let data = r#"data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello, world!"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"cachedContentTokenCount":0}}}
@@ -577,7 +577,7 @@ mod tests {
         // First event should be message_start
         match &events[0] {
             StreamEvent::MessageStart { message } => {
-                assert_eq!(message.model, "claude-sonnet-4-5");
+                assert_eq!(message.model, "claude-sonnet-4-6-thinking");
                 assert!(message.id.starts_with("msg_"));
             }
             _ => panic!("Expected MessageStart event"),
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn test_sse_parser_done_signal() {
-        let mut parser = SseParser::new("claude-sonnet-4-5");
+        let mut parser = SseParser::new("claude-sonnet-4-6-thinking");
 
         let events = parser.feed("data: [DONE]\n\n");
 
@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_sse_parser_finish() {
-        let mut parser = SseParser::new("claude-sonnet-4-5");
+        let mut parser = SseParser::new("claude-sonnet-4-6-thinking");
 
         // Feed some text first
         let data = r#"data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"cachedContentTokenCount":0}}}
@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_sse_parser_google_error_in_stream() {
-        let mut parser = SseParser::new("claude-opus-4-5-thinking");
+        let mut parser = SseParser::new("claude-opus-4-6-thinking");
 
         // Simulate a Google API error response embedded in SSE stream
         let data = r#"data: {"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_sse_parser_error_in_generate_content_response() {
-        let mut parser = SseParser::new("claude-opus-4-5-thinking");
+        let mut parser = SseParser::new("claude-opus-4-6-thinking");
 
         // Simulate a Google API error within GenerateContentResponse wrapper
         let data = r#"data: {"candidates":null,"error":{"code":404,"message":"Model not available","status":"NOT_FOUND"},"usageMetadata":null}
@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn test_sse_parser_cloudcode_wrapper_error() {
-        let mut parser = SseParser::new("claude-opus-4-5-thinking");
+        let mut parser = SseParser::new("claude-opus-4-6-thinking");
 
         // Simulate an error within CloudCodeResponse wrapper
         let data = r#"data: {"response":{"candidates":null,"error":{"code":503,"message":"Model capacity exhausted","status":"UNAVAILABLE"},"usageMetadata":null}}

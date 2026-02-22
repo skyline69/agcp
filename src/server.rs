@@ -4344,7 +4344,7 @@ async fn handle_stats(state: &Arc<ServerState>) -> Result<Response<ResponseBody>
 
 async fn handle_account_limits(state: &Arc<ServerState>) -> Result<Response<ResponseBody>, Error> {
     // Get credentials using the existing pattern
-    let credentials = get_account_credentials(state, "claude-sonnet-4-5").await;
+    let credentials = get_account_credentials(state, "claude-sonnet-4-6-thinking").await;
 
     let response = match credentials {
         Ok((access_token, project_id, account_id, _account_email)) => {
@@ -5361,7 +5361,7 @@ mod tests {
     #[tokio::test]
     async fn test_messages_empty_messages_array() {
         let addr = spawn_test_server().await;
-        let payload = r#"{"model":"claude-sonnet-4-5","max_tokens":100,"messages":[]}"#;
+        let payload = r#"{"model":"claude-sonnet-4-6-thinking","max_tokens":100,"messages":[]}"#;
         let req = format!(
             "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{payload}",
             payload.len()
@@ -5373,7 +5373,7 @@ mod tests {
     #[tokio::test]
     async fn test_messages_zero_max_tokens() {
         let addr = spawn_test_server().await;
-        let payload = r#"{"model":"claude-sonnet-4-5","max_tokens":0,"messages":[{"role":"user","content":"hi"}]}"#;
+        let payload = r#"{"model":"claude-sonnet-4-6-thinking","max_tokens":0,"messages":[{"role":"user","content":"hi"}]}"#;
         let req = format!(
             "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{payload}",
             payload.len()
@@ -5385,7 +5385,7 @@ mod tests {
     #[tokio::test]
     async fn test_messages_excessive_max_tokens() {
         let addr = spawn_test_server().await;
-        let payload = r#"{"model":"claude-sonnet-4-5","max_tokens":999999,"messages":[{"role":"user","content":"hi"}]}"#;
+        let payload = r#"{"model":"claude-sonnet-4-6-thinking","max_tokens":999999,"messages":[{"role":"user","content":"hi"}]}"#;
         let req = format!(
             "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{payload}",
             payload.len()
@@ -5400,7 +5400,7 @@ mod tests {
     #[tokio::test]
     async fn test_messages_warmup_intercept_non_stream() {
         let addr = spawn_test_server().await;
-        let payload = r#"{"model":"claude-sonnet-4-5","max_tokens":8,"stream":false,"messages":[{"role":"user","content":"Warmup ping"}]}"#;
+        let payload = r#"{"model":"claude-sonnet-4-6-thinking","max_tokens":8,"stream":false,"messages":[{"role":"user","content":"Warmup ping"}]}"#;
         let req = format!(
             "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{payload}",
             payload.len()
@@ -5413,7 +5413,7 @@ mod tests {
     #[tokio::test]
     async fn test_messages_warmup_intercept_stream() {
         let addr = spawn_test_server().await;
-        let payload = r#"{"model":"claude-sonnet-4-5","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"Warmup ping"}]}"#;
+        let payload = r#"{"model":"claude-sonnet-4-6-thinking","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"Warmup ping"}]}"#;
         let req = format!(
             "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{payload}",
             payload.len()
@@ -5427,7 +5427,7 @@ mod tests {
     #[tokio::test]
     async fn test_messages_non_warmup_not_intercepted_without_accounts() {
         let addr = spawn_test_server().await;
-        let payload = r#"{"model":"claude-sonnet-4-5","max_tokens":8,"stream":false,"messages":[{"role":"user","content":"continue"}]}"#;
+        let payload = r#"{"model":"claude-sonnet-4-6-thinking","max_tokens":8,"stream":false,"messages":[{"role":"user","content":"continue"}]}"#;
         let req = format!(
             "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{payload}",
             payload.len()

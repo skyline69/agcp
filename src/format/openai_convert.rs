@@ -433,7 +433,7 @@ mod tests {
                 text: "Hello!".to_string(),
                 cache_control: None,
             }],
-            model: "claude-sonnet-4-5".to_string(),
+            model: "claude-sonnet-4-6-thinking".to_string(),
             stop_reason: Some(StopReason::EndTurn),
             stop_sequence: None,
             usage: crate::format::anthropic::Usage {
@@ -444,7 +444,7 @@ mod tests {
             },
         };
 
-        let openai = anthropic_to_openai(&response, "claude-sonnet-4-5", "req_123");
+        let openai = anthropic_to_openai(&response, "claude-sonnet-4-6-thinking", "req_123");
 
         assert!(openai.id.starts_with("chatcmpl-"));
         assert_eq!(openai.object, "chat.completion");
@@ -468,7 +468,7 @@ mod tests {
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"location": "NYC"}),
             }],
-            model: "claude-sonnet-4-5".to_string(),
+            model: "claude-sonnet-4-6-thinking".to_string(),
             stop_reason: Some(StopReason::ToolUse),
             stop_sequence: None,
             usage: crate::format::anthropic::Usage::default(),
