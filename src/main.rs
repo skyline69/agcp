@@ -1790,8 +1790,8 @@ fn print_help() {
 {BOLD}MODEL ALIASES{RESET}
 ┌─────────────────┬────────────────────────────┐
 │ {YELLOW}opus{RESET}            │ claude-opus-4-6-thinking   │
-│ {YELLOW}sonnet{RESET}          │ claude-sonnet-4-6-thinking │
-│ {YELLOW}sonnet-thinking{RESET} │ claude-sonnet-4-6-thinking │
+│ {YELLOW}sonnet{RESET}          │ claude-sonnet-4-6          │
+│ {YELLOW}sonnet-thinking{RESET} │ claude-sonnet-4-6          │
 │ {YELLOW}flash{RESET}           │ gemini-3-flash             │
 │ {YELLOW}pro{RESET}             │ gemini-3-pro-high          │
 │ {YELLOW}3-flash{RESET}         │ gemini-3-flash             │

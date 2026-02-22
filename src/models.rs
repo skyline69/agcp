@@ -7,7 +7,7 @@ use crate::config::MappingRule;
 pub enum Model {
     // Claude models
     ClaudeOpus4_6Thinking,
-    ClaudeSonnet4_6Thinking,
+    ClaudeSonnet4_6,
     // Gemini 3 models
     Gemini3Flash,
     Gemini3ProHigh,
@@ -20,7 +20,7 @@ impl Model {
     pub fn anthropic_id(&self) -> &'static str {
         match self {
             Model::ClaudeOpus4_6Thinking => "claude-opus-4-6-thinking",
-            Model::ClaudeSonnet4_6Thinking => "claude-sonnet-4-6-thinking",
+            Model::ClaudeSonnet4_6 => "claude-sonnet-4-6",
             Model::Gemini3Flash => "gemini-3-flash",
             Model::Gemini3ProHigh => "gemini-3-pro-high",
             Model::Gemini3ProLow => "gemini-3-pro-low",
@@ -31,7 +31,7 @@ impl Model {
     pub fn all() -> &'static [Model] {
         &[
             Model::ClaudeOpus4_6Thinking,
-            Model::ClaudeSonnet4_6Thinking,
+            Model::ClaudeSonnet4_6,
             Model::Gemini3Flash,
             Model::Gemini3ProHigh,
             Model::Gemini3ProLow,
@@ -83,26 +83,25 @@ pub fn resolve_model_alias(model: &str) -> &str {
     {
         return "claude-opus-4-6-thinking";
     }
+    // Sonnet "thinking" variant currently returns NOT_FOUND on Cloud Code.
+    // Normalize all Sonnet 4.6/4.5 variants to the available canonical ID.
     if starts_with_ignore_case(model, "claude-sonnet-4-6-thinking")
         || starts_with_ignore_case(model, "claude-sonnet-4.6-thinking")
-    {
-        return "claude-sonnet-4-6-thinking";
-    }
-    if starts_with_ignore_case(model, "claude-sonnet-4-6")
+        || starts_with_ignore_case(model, "claude-sonnet-4-6")
         || starts_with_ignore_case(model, "claude-sonnet-4.6")
     {
-        return "claude-sonnet-4-6-thinking";
+        return "claude-sonnet-4-6";
     }
-    // Sonnet 4.5 is no longer available, redirect to Sonnet 4.6
+    // Sonnet 4.5 is no longer available, redirect to Sonnet 4.6.
     if starts_with_ignore_case(model, "claude-sonnet-4-5-thinking")
         || starts_with_ignore_case(model, "claude-sonnet-4.5-thinking")
     {
-        return "claude-sonnet-4-6-thinking";
+        return "claude-sonnet-4-6";
     }
     if starts_with_ignore_case(model, "claude-sonnet-4-5")
         || starts_with_ignore_case(model, "claude-sonnet-4.5")
     {
-        return "claude-sonnet-4-6-thinking";
+        return "claude-sonnet-4-6";
     }
     // Claude 3.5 Haiku is not available on Cloud Code, map to Gemini 3 Flash
     if starts_with_ignore_case(model, "claude-3-5-haiku")
@@ -118,8 +117,8 @@ pub fn resolve_model_alias(model: &str) -> &str {
         // Claude aliases - default to 4.6 family
         "opus" | "opus-thinking" | "claude-opus" => "claude-opus-4-6-thinking",
         "opus-4-5" | "opus-4.5" | "claude-opus-4-5" => "claude-opus-4-6-thinking",
-        "sonnet" | "claude-sonnet" => "claude-sonnet-4-6-thinking",
-        "sonnet-thinking" | "claude-sonnet-thinking" => "claude-sonnet-4-6-thinking",
+        "sonnet" | "claude-sonnet" => "claude-sonnet-4-6",
+        "sonnet-thinking" | "claude-sonnet-thinking" => "claude-sonnet-4-6",
         // Haiku is not available, map to Gemini 3 Flash
         "haiku" | "claude-haiku" | "claude-haiku-4-5" => "gemini-3-flash",
 
@@ -150,15 +149,15 @@ pub fn resolve_model_alias(model: &str) -> &str {
 pub fn get_fallback_model(model: &str) -> Option<&'static str> {
     match model {
         "gemini-3-pro-high" => Some("claude-opus-4-6-thinking"),
-        "gemini-3-pro-low" => Some("claude-sonnet-4-6-thinking"),
-        "gemini-3-flash" => Some("claude-sonnet-4-6-thinking"),
-        "claude-opus-4-6-thinking" => Some("claude-sonnet-4-6-thinking"),
+        "gemini-3-pro-low" => Some("claude-sonnet-4-6"),
+        "gemini-3-flash" => Some("claude-sonnet-4-6"),
+        "claude-opus-4-6-thinking" => Some("claude-sonnet-4-6"),
         "claude-sonnet-4-6-thinking" => Some("gemini-3-flash"),
         "claude-sonnet-4-6" => Some("gemini-3-flash"),
         // Compatibility for legacy 4.5 names
         "claude-opus-4-5-thinking" => Some("claude-opus-4-6-thinking"),
-        "claude-sonnet-4-5-thinking" => Some("claude-sonnet-4-6-thinking"),
-        "claude-sonnet-4-5" => Some("claude-sonnet-4-6-thinking"),
+        "claude-sonnet-4-5-thinking" => Some("claude-sonnet-4-6"),
+        "claude-sonnet-4-5" => Some("claude-sonnet-4-6"),
         "gpt-oss-120b-medium" => Some("gemini-3-flash"),
         _ => None,
     }
@@ -229,13 +228,13 @@ pub fn resolve_with_mappings(
 ) -> String {
     // Check for background task model
     if model == "internal-background-task" {
-        return background_task_model.to_string();
+        return resolve_model_alias(background_task_model).to_string();
     }
 
     // Check user mappings (first match wins)
     for rule in rules {
         if glob_match(&rule.from, model) {
-            return rule.to.clone();
+            return resolve_model_alias(&rule.to).to_string();
         }
     }
 
@@ -346,7 +345,7 @@ impl MappingPreset {
                 },
                 MappingRule {
                     from: "claude-3-5-sonnet-*".into(),
-                    to: "claude-sonnet-4-6-thinking".into(),
+                    to: "claude-sonnet-4-6".into(),
                 },
                 MappingRule {
                     from: "claude-opus-4-*".into(),
@@ -392,7 +391,7 @@ impl MappingPreset {
                 },
                 MappingRule {
                     from: "claude-3-5-sonnet-*".into(),
-                    to: "claude-sonnet-4-6-thinking".into(),
+                    to: "claude-sonnet-4-6".into(),
                 },
                 MappingRule {
                     from: "claude-opus-4-*".into(),
@@ -434,7 +433,7 @@ impl MappingPreset {
                 },
                 MappingRule {
                     from: "claude-3-opus-*".into(),
-                    to: "claude-sonnet-4-6-thinking".into(),
+                    to: "claude-sonnet-4-6".into(),
                 },
                 MappingRule {
                     from: "claude-3-5-sonnet-*".into(),
@@ -442,7 +441,7 @@ impl MappingPreset {
                 },
                 MappingRule {
                     from: "claude-opus-4-*".into(),
-                    to: "claude-sonnet-4-6-thinking".into(),
+                    to: "claude-sonnet-4-6".into(),
                 },
             ],
             MappingPreset::None | MappingPreset::Custom => vec![],
@@ -461,7 +460,7 @@ mod tests {
 
     #[test]
     fn test_model_family() {
-        assert_eq!(get_model_family("claude-sonnet-4-6-thinking"), "claude");
+        assert_eq!(get_model_family("claude-sonnet-4-6"), "claude");
         assert_eq!(get_model_family("gemini-3-flash"), "gemini");
         assert_eq!(get_model_family("gpt-oss-120b-medium"), "gpt-oss");
         assert_eq!(get_model_family("unknown-model"), "unknown");
@@ -491,11 +490,8 @@ mod tests {
         // Claude aliases - opus now defaults to 4.6
         assert_eq!(resolve_model_alias("opus"), "claude-opus-4-6-thinking");
         assert_eq!(resolve_model_alias("opus-4-5"), "claude-opus-4-6-thinking");
-        assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6-thinking");
-        assert_eq!(
-            resolve_model_alias("sonnet-thinking"),
-            "claude-sonnet-4-6-thinking"
-        );
+        assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6");
+        assert_eq!(resolve_model_alias("sonnet-thinking"), "claude-sonnet-4-6");
 
         // Gemini aliases (2.5 aliases now redirect to Gemini 3)
         assert_eq!(resolve_model_alias("flash"), "gemini-3-flash");
@@ -518,15 +514,15 @@ mod tests {
         );
         assert_eq!(
             resolve_model_alias("claude-sonnet-4-5"),
-            "claude-sonnet-4-6-thinking"
+            "claude-sonnet-4-6"
         );
         assert_eq!(
             resolve_model_alias("claude-sonnet-4-5-thinking"),
-            "claude-sonnet-4-6-thinking"
+            "claude-sonnet-4-6"
         );
         assert_eq!(
             resolve_model_alias("claude-sonnet-4-6"),
-            "claude-sonnet-4-6-thinking"
+            "claude-sonnet-4-6"
         );
         assert_eq!(resolve_model_alias("gemini-3-flash"), "gemini-3-flash");
         assert_eq!(
@@ -561,17 +557,17 @@ mod tests {
         );
         assert_eq!(
             get_fallback_model("gemini-3-pro-low"),
-            Some("claude-sonnet-4-6-thinking")
+            Some("claude-sonnet-4-6")
         );
         assert_eq!(
             get_fallback_model("gemini-3-flash"),
-            Some("claude-sonnet-4-6-thinking")
+            Some("claude-sonnet-4-6")
         );
 
         // Claude model fallbacks: 4.6 -> gemini, legacy 4.5 -> 4.6
         assert_eq!(
             get_fallback_model("claude-opus-4-6-thinking"),
-            Some("claude-sonnet-4-6-thinking")
+            Some("claude-sonnet-4-6")
         );
         assert_eq!(
             get_fallback_model("claude-opus-4-5-thinking"),
@@ -583,11 +579,11 @@ mod tests {
         );
         assert_eq!(
             get_fallback_model("claude-sonnet-4-5-thinking"),
-            Some("claude-sonnet-4-6-thinking")
+            Some("claude-sonnet-4-6")
         );
         assert_eq!(
             get_fallback_model("claude-sonnet-4-5"),
-            Some("claude-sonnet-4-6-thinking")
+            Some("claude-sonnet-4-6")
         );
 
         // GPT-OSS fallback
@@ -667,6 +663,16 @@ mod tests {
         assert_eq!(
             resolve_with_mappings("internal-background-task", &rules, "gemini-3-flash"),
             "gemini-3-flash"
+        );
+
+        // Mapping targets are normalized through alias resolution.
+        let sonnet_rule = vec![MappingRule {
+            from: "o3-*".into(),
+            to: "claude-sonnet-4-6-thinking".into(),
+        }];
+        assert_eq!(
+            resolve_with_mappings("o3-mini", &sonnet_rule, "gemini-3-flash"),
+            "claude-sonnet-4-6"
         );
 
         // Unknown model passes through

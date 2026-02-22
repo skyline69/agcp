@@ -154,7 +154,7 @@ pub fn responses_to_anthropic(request: &ResponsesRequest) -> MessagesRequest {
     let model = request
         .model
         .clone()
-        .unwrap_or_else(|| "claude-sonnet-4-6-thinking".to_string());
+        .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
 
     MessagesRequest {
         model,

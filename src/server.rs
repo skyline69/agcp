@@ -4344,7 +4344,7 @@ async fn handle_stats(state: &Arc<ServerState>) -> Result<Response<ResponseBody>
 
 async fn handle_account_limits(state: &Arc<ServerState>) -> Result<Response<ResponseBody>, Error> {
     // Get credentials using the existing pattern
-    let credentials = get_account_credentials(state, "claude-sonnet-4-6-thinking").await;
+    let credentials = get_account_credentials(state, "claude-sonnet-4-6").await;
 
     let response = match credentials {
         Ok((access_token, project_id, account_id, _account_email)) => {
