@@ -18,6 +18,13 @@ host = "127.0.0.1"
 # Per-request timeout in seconds (covers the full round-trip to Cloud Code)
 request_timeout_secs = 300
 
+# Intercept Claude Code-style warmup requests on /v1/messages and /messages
+# and respond locally without consuming upstream quota.
+warmup_intercept_enabled = true
+
+# Maximum text length considered for warmup detection.
+warmup_intercept_max_text_len = 100
+
 [logging]
 # Enable verbose debug logging
 debug = false
@@ -39,6 +46,16 @@ quota_threshold = 0.1
 # Enable automatic model fallback when the requested model's quota is exhausted.
 # For example, if claude-opus-4-6-thinking is exhausted, fall back to an alternative.
 fallback = false
+
+# Run a lightweight warmup request at startup to reduce first-request latency.
+warmup_on_startup = true
+
+# Model used by warmup_on_startup.
+warmup_model = "gemini-3-flash"
+
+# Periodic quota refresh interval in seconds.
+# Set to 0 to disable periodic refresh.
+quota_refresh_interval_secs = 900
 
 [cache]
 # Enable response caching for non-streaming, non-thinking requests.

@@ -1,9 +1,11 @@
+use base64::Engine as _;
 use http_body_util::{BodyExt, Either, Full};
 use hyper::body::{Bytes, Frame};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -22,10 +24,17 @@ use crate::cloudcode::{
 };
 use crate::config::get_config;
 use crate::error::{ApiError, AuthError, Error};
+use crate::format::google::{
+    CloudCodeRequest, Content as GoogleContent,
+    GenerateContentRequest as GoogleGenerateContentRequest,
+    GenerationConfig as GoogleGenerationConfig, Part as GooglePart, TextPart as GoogleTextPart,
+};
 use crate::format::{
     ChatCompletionRequest, MessagesRequest, ModelInfo, ModelsResponse, StreamEvent,
 };
-use crate::models::{Model, get_fallback_model, is_thinking_model, resolve_with_mappings};
+use crate::models::{
+    Model, get_fallback_model, get_model_family, is_thinking_model, resolve_with_mappings,
+};
 use crate::stats::get_stats;
 
 /// Maximum request body size (10 MB).
@@ -155,9 +164,9 @@ async fn handle_request(
         return Ok(cors_preflight_response());
     }
 
-    // Check API key authentication for /v1/* endpoints
+    // Check API key authentication for /v1/* and /v1beta/* endpoints
     let config = get_config();
-    if path.starts_with("/v1/")
+    if (path.starts_with("/v1/") || path.starts_with("/v1beta/"))
         && let Some(ref expected_key) = config.server.api_key
     {
         let auth_header = req
@@ -199,8 +208,48 @@ async fn handle_request(
             // OpenAI Responses API (used by Codex CLI)
             (Method::POST, "/v1/responses") => handle_responses(req, state, &request_id).await,
 
+            // OpenAI Images API
+            (Method::POST, "/v1/images/generations") => {
+                handle_images_generations(req, state, &request_id).await
+            }
+            (Method::POST, "/v1/images/edits") => {
+                handle_images_edit_like(req, state, &request_id, ImageEditMode::Edits).await
+            }
+            (Method::POST, "/v1/images/variations") => {
+                handle_images_edit_like(req, state, &request_id, ImageEditMode::Variations).await
+            }
+
+            // OpenAI Audio API
+            (Method::POST, "/v1/audio/transcriptions") => {
+                handle_audio_transcriptions(req, state, &request_id).await
+            }
+
             // Token counting API — estimates token count using chars/4 heuristic
             (Method::POST, "/v1/messages/count_tokens") => handle_count_tokens(req).await,
+
+            // Native Gemini API
+            (Method::GET, "/v1beta/models") => handle_gemini_models().await,
+            (Method::GET, p) if p.starts_with("/v1beta/models/") => handle_gemini_model(p).await,
+            (Method::POST, p)
+                if p.starts_with("/v1beta/models/") && p.ends_with(":countTokens") =>
+            {
+                handle_gemini_count_tokens(req, p).await
+            }
+            (Method::POST, p)
+                if p.starts_with("/v1beta/models/") && p.ends_with(":generateContent") =>
+            {
+                handle_gemini_generate_content(req, state, p, &request_id).await
+            }
+            (Method::POST, p)
+                if p.starts_with("/v1beta/models/") && p.ends_with(":streamGenerateContent") =>
+            {
+                handle_gemini_stream_generate_content(req, state, p, &request_id).await
+            }
+
+            // Internal warmup endpoint
+            (Method::POST, "/internal/warmup") => {
+                handle_internal_warmup(req, state, &request_id).await
+            }
 
             // Event logging batch (Claude Code sends these - acknowledge silently)
             (Method::POST, "/api/event_logging/batch") => {
@@ -212,6 +261,7 @@ async fn handle_request(
 
             // Models API
             (Method::GET, "/v1/models") => handle_models().await,
+            (Method::POST, "/v1/models/detect") => handle_model_detect(req, &request_id).await,
 
             // Stats API
             (Method::GET, "/stats") | (Method::GET, "/v1/stats") => handle_stats(&state).await,
@@ -333,6 +383,7 @@ fn is_internal_endpoint(path: &str) -> bool {
             | "/v1/stats"
             | "/cache/stats"
             | "/account-limits"
+            | "/internal/warmup"
             | "/api/event_logging/batch"
     )
 }
@@ -590,6 +641,21 @@ async fn handle_messages(
     );
 
     validate_request(&messages_request)?;
+
+    if config.server.warmup_intercept_enabled
+        && is_warmup_request(
+            &messages_request,
+            config.server.warmup_intercept_max_text_len,
+        )
+    {
+        info!(
+            model = %messages_request.model,
+            request_id = %request_id,
+            "Warmup request intercepted"
+        );
+        get_stats().record_request(&messages_request.model, "/v1/messages");
+        return build_warmup_intercept_response(&messages_request, request_id);
+    }
 
     // Try the primary model first
     let result =
@@ -1879,6 +1945,153 @@ fn openai_error_response(
     error_response(status, message, error_type, ErrorFormat::OpenAI)
 }
 
+fn is_warmup_text_candidate(text: &str, max_text_len: usize) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.len() > max_text_len {
+        return false;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    lower == "warmup"
+        || lower.starts_with("warmup ")
+        || lower.starts_with("warmup\n")
+        || lower.starts_with("warmup\t")
+}
+
+fn tool_result_contains_warmup(
+    content: &crate::format::anthropic::ToolResultContent,
+    max_text_len: usize,
+) -> bool {
+    match content {
+        crate::format::anthropic::ToolResultContent::Text(text) => {
+            is_warmup_text_candidate(text, max_text_len)
+        }
+        crate::format::anthropic::ToolResultContent::Blocks(blocks) => {
+            blocks.iter().any(|block| match block {
+                crate::format::ContentBlock::Text { text, .. } => {
+                    is_warmup_text_candidate(text, max_text_len)
+                }
+                _ => false,
+            })
+        }
+    }
+}
+
+fn is_warmup_request(request: &MessagesRequest, max_text_len: usize) -> bool {
+    if max_text_len == 0 {
+        return false;
+    }
+
+    let Some(last_message) = request.messages.last() else {
+        return false;
+    };
+    if last_message.role != crate::format::Role::User {
+        return false;
+    }
+
+    match &last_message.content {
+        crate::format::anthropic::MessageContent::Text(text) => {
+            is_warmup_text_candidate(text, max_text_len)
+        }
+        crate::format::anthropic::MessageContent::Blocks(blocks) => {
+            blocks.iter().any(|block| match block {
+                crate::format::ContentBlock::Text { text, .. } => {
+                    is_warmup_text_candidate(text, max_text_len)
+                }
+                crate::format::ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => {
+                    is_error.unwrap_or(false) && tool_result_contains_warmup(content, max_text_len)
+                }
+                _ => false,
+            })
+        }
+    }
+}
+
+fn build_warmup_intercept_response(
+    request: &MessagesRequest,
+    request_id: &str,
+) -> Result<Response<ResponseBody>, Error> {
+    let message_id = format!("msg_warmup_{}", chrono::Utc::now().timestamp_millis());
+
+    let mut response = if request.stream {
+        let events = [
+            crate::format::StreamEvent::MessageStart {
+                message: Box::new(crate::format::MessageStart {
+                    id: message_id.clone(),
+                    message_type: "message".to_string(),
+                    role: crate::format::Role::Assistant,
+                    content: vec![],
+                    model: request.model.clone(),
+                    stop_reason: None,
+                    stop_sequence: None,
+                    usage: crate::format::Usage {
+                        input_tokens: 1,
+                        output_tokens: 0,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                    },
+                }),
+            },
+            crate::format::StreamEvent::ContentBlockStart {
+                index: 0,
+                content_block: crate::format::ContentBlock::Text {
+                    text: String::new(),
+                    cache_control: None,
+                },
+            },
+            crate::format::StreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: crate::format::ContentDelta::Text {
+                    text: "OK".to_string(),
+                },
+            },
+            crate::format::StreamEvent::ContentBlockStop { index: 0 },
+            crate::format::StreamEvent::MessageDelta {
+                delta: crate::format::MessageDeltaData {
+                    stop_reason: Some(crate::format::StopReason::EndTurn),
+                    stop_sequence: None,
+                },
+                usage: crate::format::MessageDeltaUsage { output_tokens: 1 },
+            },
+            create_message_stop(),
+        ];
+
+        let mut body = String::new();
+        for event in &events {
+            body.push_str(&format_sse_event(event));
+        }
+        sse_ok_response(body, request_id)
+    } else {
+        let body = crate::format::MessagesResponse {
+            id: message_id,
+            response_type: "message".to_string(),
+            role: crate::format::Role::Assistant,
+            content: vec![crate::format::ContentBlock::Text {
+                text: "OK".to_string(),
+                cache_control: None,
+            }],
+            model: request.model.clone(),
+            stop_reason: Some(crate::format::StopReason::EndTurn),
+            stop_sequence: None,
+            usage: crate::format::Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            },
+        };
+        json_ok_response(serde_json::to_vec(&body)?, request_id, Some("BYPASS"))
+    };
+
+    response.headers_mut().insert(
+        "X-Warmup-Intercepted",
+        hyper::header::HeaderValue::from_static("true"),
+    );
+    Ok(response)
+}
+
 /// Check if request headers indicate cache bypass
 fn should_bypass_cache(headers: &hyper::HeaderMap) -> bool {
     // Check Cache-Control: no-cache or no-store
@@ -2221,6 +2434,96 @@ async fn handle_models() -> Result<Response<ResponseBody>, Error> {
         .unwrap())
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct ModelDetectRequest {
+    #[serde(default)]
+    model: Option<String>,
+}
+
+fn detect_model_request_type(model: &str) -> &'static str {
+    if model.to_ascii_lowercase().contains("image") {
+        return "image_gen";
+    }
+
+    match get_model_family(model) {
+        "claude" => "claude",
+        "gemini" => "gemini",
+        "gpt-oss" => "gpt-oss",
+        _ => "gemini",
+    }
+}
+
+async fn handle_model_detect(
+    req: Request<hyper::body::Incoming>,
+    request_id: &str,
+) -> Result<Response<ResponseBody>, Error> {
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !content_type.contains("application/json") {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Content-Type must be application/json",
+            "invalid_request_error",
+        ));
+    }
+
+    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let request: ModelDetectRequest = match serde_json::from_slice(&body_bytes) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            return Ok(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid JSON: {e}"),
+                "invalid_request_error",
+            ));
+        }
+    };
+
+    let Some(model) = request.model else {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Missing required field: model",
+            "invalid_request_error",
+        ));
+    };
+    if model.trim().is_empty() {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "model cannot be empty",
+            "invalid_request_error",
+        ));
+    }
+
+    let config = get_config();
+    let mapped_model = resolve_with_mappings(
+        &model,
+        &config.mappings.rules,
+        &config.mappings.background_task_model,
+    );
+    let request_type = detect_model_request_type(&mapped_model);
+    let is_image_gen = request_type == "image_gen";
+
+    let response = serde_json::json!({
+        "model": model,
+        "mapped_model": mapped_model,
+        "type": request_type,
+        "features": {
+            "has_web_search": false,
+            "is_image_gen": is_image_gen
+        }
+    });
+
+    Ok(json_ok_response(
+        serde_json::to_vec(&response)?,
+        request_id,
+        Some("BYPASS"),
+    ))
+}
+
 /// Estimate token count for a messages request.
 ///
 /// Uses a chars/4 heuristic which is a reasonable approximation for most
@@ -2292,6 +2595,1703 @@ async fn handle_count_tokens(
 
     let response_body = serde_json::to_vec(&response)?;
     Ok(json_ok_response(response_body, "count_tokens", None))
+}
+
+fn parse_gemini_model_path(path: &str, suffix: &str) -> Option<String> {
+    let model = path.strip_prefix("/v1beta/models/")?.strip_suffix(suffix)?;
+    let model = model.strip_prefix("models/").unwrap_or(model);
+    if model.is_empty() {
+        None
+    } else {
+        Some(model.to_string())
+    }
+}
+
+fn parse_gemini_get_model_path(path: &str) -> Option<String> {
+    let model = path.strip_prefix("/v1beta/models/")?;
+    if model.is_empty() || model.contains(':') {
+        return None;
+    }
+    let model = model.strip_prefix("models/").unwrap_or(model);
+    Some(model.to_string())
+}
+
+fn is_known_gemini_model(model: &str) -> bool {
+    Model::all()
+        .iter()
+        .map(Model::anthropic_id)
+        .any(|id| id == model && id.starts_with("gemini-"))
+}
+
+fn gemini_model_descriptor(model: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": format!("models/{model}"),
+        "baseModelId": model,
+        "version": "agcp",
+        "displayName": model,
+        "description": "Gemini model via AGCP",
+        "inputTokenLimit": 1_048_576,
+        "outputTokenLimit": 65_536,
+        "supportedGenerationMethods": [
+            "generateContent",
+            "streamGenerateContent",
+            "countTokens"
+        ],
+        "temperature": 1.0,
+        "topP": 1.0,
+        "topK": 40
+    })
+}
+
+async fn handle_gemini_models() -> Result<Response<ResponseBody>, Error> {
+    let models: Vec<_> = Model::all()
+        .iter()
+        .map(Model::anthropic_id)
+        .filter(|id| id.starts_with("gemini-"))
+        .map(gemini_model_descriptor)
+        .collect();
+
+    let response = serde_json::json!({ "models": models });
+    Ok(json_ok_response(
+        serde_json::to_vec(&response)?,
+        "gemini_models",
+        None,
+    ))
+}
+
+async fn handle_gemini_model(path: &str) -> Result<Response<ResponseBody>, Error> {
+    let Some(model) = parse_gemini_get_model_path(path) else {
+        return Ok(json_response(
+            StatusCode::NOT_FOUND,
+            r#"{"error":{"code":404,"message":"Model not found","status":"NOT_FOUND"}}"#,
+        ));
+    };
+
+    if !is_known_gemini_model(&model) {
+        return Ok(json_response(
+            StatusCode::NOT_FOUND,
+            r#"{"error":{"code":404,"message":"Model not found","status":"NOT_FOUND"}}"#,
+        ));
+    }
+
+    let response = gemini_model_descriptor(&model);
+    Ok(json_ok_response(
+        serde_json::to_vec(&response)?,
+        "gemini_model",
+        None,
+    ))
+}
+
+fn count_gemini_part_chars(part: &serde_json::Value) -> usize {
+    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+        return text.len();
+    }
+
+    if part.get("inlineData").is_some() || part.get("inline_data").is_some() {
+        return 1024;
+    }
+
+    if let Some(function_call) = part
+        .get("functionCall")
+        .or_else(|| part.get("function_call"))
+    {
+        return function_call.to_string().len();
+    }
+
+    if let Some(function_response) = part
+        .get("functionResponse")
+        .or_else(|| part.get("function_response"))
+    {
+        return function_response.to_string().len();
+    }
+
+    0
+}
+
+fn estimate_gemini_tokens(payload: &serde_json::Value) -> u32 {
+    let mut total_chars = 0usize;
+
+    if let Some(system) = payload
+        .get("systemInstruction")
+        .or_else(|| payload.get("system_instruction"))
+        && let Some(parts) = system.get("parts").and_then(|v| v.as_array())
+    {
+        total_chars += parts.iter().map(count_gemini_part_chars).sum::<usize>();
+    }
+
+    if let Some(contents) = payload.get("contents").and_then(|v| v.as_array()) {
+        for content in contents {
+            if let Some(role) = content.get("role").and_then(|v| v.as_str()) {
+                total_chars += role.len();
+            }
+            if let Some(parts) = content.get("parts").and_then(|v| v.as_array()) {
+                total_chars += parts.iter().map(count_gemini_part_chars).sum::<usize>();
+            }
+        }
+    }
+
+    if let Some(tools) = payload.get("tools").and_then(|v| v.as_array()) {
+        total_chars += tools.iter().map(|t| t.to_string().len()).sum::<usize>();
+    }
+
+    (total_chars / 4).max(1) as u32
+}
+
+async fn handle_gemini_count_tokens(
+    req: Request<hyper::body::Incoming>,
+    path: &str,
+) -> Result<Response<ResponseBody>, Error> {
+    let Some(model) = parse_gemini_model_path(path, ":countTokens") else {
+        return Ok(json_response(
+            StatusCode::NOT_FOUND,
+            r#"{"error":{"code":404,"message":"Model not found","status":"NOT_FOUND"}}"#,
+        ));
+    };
+
+    if !is_known_gemini_model(&model) {
+        return Ok(json_response(
+            StatusCode::NOT_FOUND,
+            r#"{"error":{"code":404,"message":"Model not found","status":"NOT_FOUND"}}"#,
+        ));
+    }
+
+    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let payload: serde_json::Value = serde_json::from_slice(&body_bytes)?;
+    let total_tokens = estimate_gemini_tokens(&payload);
+
+    let response = serde_json::json!({
+        "totalTokens": total_tokens
+    });
+
+    Ok(json_ok_response(
+        serde_json::to_vec(&response)?,
+        "gemini_count_tokens",
+        None,
+    ))
+}
+
+fn build_gemini_cloudcode_request(
+    project_id: &str,
+    model: &str,
+    mut request: GoogleGenerateContentRequest,
+    request_id: &str,
+) -> CloudCodeRequest {
+    if request.session_id.is_none() {
+        request.session_id = Some(request_id.to_string());
+    }
+
+    CloudCodeRequest {
+        project: project_id.to_string(),
+        model: model.to_string(),
+        request,
+        user_agent: "agcp".to_string(),
+        request_type: "api".to_string(),
+        request_id: request_id.to_string(),
+    }
+}
+
+fn record_google_usage(model: &str, usage_metadata: Option<&crate::format::google::UsageMetadata>) {
+    if let Some(usage) = usage_metadata {
+        let cache_read = usage.cached_content_token_count;
+        let input_tokens = usage.prompt_token_count.saturating_sub(cache_read);
+        let output_tokens = usage.candidates_token_count;
+        get_stats().record_token_usage(model, input_tokens, output_tokens, cache_read);
+    }
+}
+
+async fn handle_gemini_generate_content(
+    req: Request<hyper::body::Incoming>,
+    state: Arc<ServerState>,
+    path: &str,
+    request_id: &str,
+) -> Result<Response<ResponseBody>, Error> {
+    #[cfg(test)]
+    let mock_upstream = mock_upstream_enabled(req.headers());
+    #[cfg(not(test))]
+    let mock_upstream = false;
+
+    let Some(model) = parse_gemini_model_path(path, ":generateContent") else {
+        return Ok(json_response(
+            StatusCode::NOT_FOUND,
+            r#"{"error":{"code":404,"message":"Model not found","status":"NOT_FOUND"}}"#,
+        ));
+    };
+
+    if !is_known_gemini_model(&model) {
+        return Ok(json_response(
+            StatusCode::NOT_FOUND,
+            r#"{"error":{"code":404,"message":"Model not found","status":"NOT_FOUND"}}"#,
+        ));
+    }
+
+    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let request: GoogleGenerateContentRequest = serde_json::from_slice(&body_bytes)?;
+
+    get_stats().record_request(&model, "/v1beta/models/:generateContent");
+
+    if mock_upstream {
+        let response = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{"text": "mock-gemini-response"}]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 3,
+                "totalTokenCount": 11,
+                "cachedContentTokenCount": 0
+            }
+        });
+        return Ok(json_ok_response(
+            serde_json::to_vec(&response)?,
+            request_id,
+            Some("BYPASS"),
+        ));
+    }
+
+    let (access_token, project_id, account_id, account_email) =
+        get_account_credentials(&state, &model).await?;
+
+    let cc_request = build_gemini_cloudcode_request(&project_id, &model, request, request_id);
+    let request_body = Bytes::from(serde_json::to_vec(&cc_request)?);
+
+    let result = async {
+        let response = state
+            .cloudcode_client
+            .send_request(request_body, &access_token, &model)
+            .await?;
+        record_google_usage(&model, response.usage_metadata.as_ref());
+        Ok(json_ok_response(
+            serde_json::to_vec(&response)?,
+            request_id,
+            Some("BYPASS"),
+        ))
+    }
+    .await;
+
+    track_request_outcome(
+        &state,
+        &account_id,
+        &account_email,
+        &model,
+        request_id,
+        &result,
+    )
+    .await;
+
+    result
+}
+
+async fn handle_gemini_stream_generate_content(
+    req: Request<hyper::body::Incoming>,
+    state: Arc<ServerState>,
+    path: &str,
+    request_id: &str,
+) -> Result<Response<ResponseBody>, Error> {
+    #[cfg(test)]
+    let mock_upstream = mock_upstream_enabled(req.headers());
+    #[cfg(not(test))]
+    let mock_upstream = false;
+
+    let Some(model) = parse_gemini_model_path(path, ":streamGenerateContent") else {
+        return Ok(json_response(
+            StatusCode::NOT_FOUND,
+            r#"{"error":{"code":404,"message":"Model not found","status":"NOT_FOUND"}}"#,
+        ));
+    };
+
+    if !is_known_gemini_model(&model) {
+        return Ok(json_response(
+            StatusCode::NOT_FOUND,
+            r#"{"error":{"code":404,"message":"Model not found","status":"NOT_FOUND"}}"#,
+        ));
+    }
+
+    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let request: GoogleGenerateContentRequest = serde_json::from_slice(&body_bytes)?;
+
+    get_stats().record_request(&model, "/v1beta/models/:streamGenerateContent");
+
+    if mock_upstream {
+        let body = "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"mock stream chunk\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":8,\"candidatesTokenCount\":3,\"totalTokenCount\":11,\"cachedContentTokenCount\":0}}}\n\n";
+        return Ok(sse_ok_response(body.to_string(), request_id));
+    }
+
+    let (access_token, project_id, account_id, account_email) =
+        get_account_credentials(&state, &model).await?;
+
+    let cc_request = build_gemini_cloudcode_request(&project_id, &model, request, request_id);
+    let request_body = Bytes::from(serde_json::to_vec(&cc_request)?);
+
+    let result = async {
+        let upstream = state
+            .cloudcode_client
+            .send_streaming_request(request_body, &access_token, &model)
+            .await?;
+
+        let (tx, body) = streaming_body();
+        let response = sse_streaming_response(body, request_id);
+
+        tokio::spawn(async move {
+            let mut incoming = upstream.into_body();
+
+            loop {
+                let frame_timeout = Duration::from_secs(STREAM_FRAME_TIMEOUT_SECS);
+                match tokio::time::timeout(frame_timeout, incoming.frame()).await {
+                    Ok(Some(Ok(frame))) => {
+                        if let Ok(data) = frame.into_data() {
+                            let _ = tx.send(data).await;
+                        }
+                    }
+                    Ok(Some(Err(e))) => {
+                        warn!(error = %e, "Error reading Gemini upstream stream");
+                        break;
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        warn!("Upstream frame timeout in Gemini streaming");
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(response)
+    }
+    .await;
+
+    track_request_outcome(
+        &state,
+        &account_id,
+        &account_email,
+        &model,
+        request_id,
+        &result,
+    )
+    .await;
+
+    result
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct WarmupRequest {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    refresh_quotas: Option<bool>,
+}
+
+async fn handle_internal_warmup(
+    req: Request<hyper::body::Incoming>,
+    state: Arc<ServerState>,
+    request_id: &str,
+) -> Result<Response<ResponseBody>, Error> {
+    let has_enabled_accounts = {
+        let accounts = state.accounts.read().await;
+        accounts.accounts.iter().any(|a| a.enabled && !a.is_invalid)
+    };
+
+    if !has_enabled_accounts {
+        return Ok(json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"status":"error","message":"No enabled accounts configured. Run 'agcp login' first."}"#,
+        ));
+    }
+
+    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let warmup_request = if body_bytes.is_empty() {
+        WarmupRequest {
+            model: None,
+            refresh_quotas: None,
+        }
+    } else {
+        serde_json::from_slice::<WarmupRequest>(&body_bytes)?
+    };
+
+    let config = get_config();
+    let requested_model = warmup_request
+        .model
+        .unwrap_or_else(|| "gemini-3-flash".to_string());
+    let model = resolve_with_mappings(
+        &requested_model,
+        &config.mappings.rules,
+        &config.mappings.background_task_model,
+    );
+    let refresh_quotas = warmup_request.refresh_quotas.unwrap_or(true);
+
+    get_stats().record_request(&model, "/internal/warmup");
+
+    let (access_token, project_id, account_id, account_email) =
+        get_account_credentials(&state, &model).await?;
+
+    let result = async {
+        let mut refreshed_models = 0usize;
+
+        // Send a minimal warmup request so first real request has lower cold-start latency.
+        let warmup_request = MessagesRequest {
+            model: model.clone(),
+            messages: vec![crate::format::anthropic::Message {
+                role: crate::format::anthropic::Role::User,
+                content: crate::format::anthropic::MessageContent::Text(
+                    "Warmup ping: reply with OK.".to_string(),
+                ),
+            }],
+            max_tokens: 8,
+            stream: false,
+            system: None,
+            tools: None,
+            temperature: Some(0.0),
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            tool_choice: None,
+            thinking: None,
+            response_format: None,
+            candidate_count: None,
+        };
+
+        let cc_request = build_request(&warmup_request, &project_id);
+        let warmup_body = Bytes::from(serde_json::to_vec(&cc_request)?);
+        let warmup_response = state
+            .cloudcode_client
+            .send_request(warmup_body, &access_token, &model)
+            .await?;
+        record_google_usage(&model, warmup_response.usage_metadata.as_ref());
+
+        if refresh_quotas {
+            let quotas = fetch_model_quotas(&state.http_client, &access_token, Some(&project_id))
+                .await
+                .map_err(Error::Http)?;
+            refreshed_models = quotas.len();
+
+            let mut accounts = state.accounts.write().await;
+            if let Some(account) = accounts.get_account_mut(&account_id) {
+                for quota in &quotas {
+                    let reset_time = quota
+                        .reset_time
+                        .as_ref()
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|dt| dt.timestamp() as u64)
+                        .unwrap_or(0);
+
+                    account.quota.insert(
+                        quota.model_id.clone(),
+                        crate::auth::accounts::ModelQuota {
+                            remaining_fraction: quota.remaining_fraction,
+                            reset_time,
+                        },
+                    );
+                }
+            }
+            if let Err(e) = accounts.save() {
+                warn!(error = %e, "Failed to persist refreshed quotas during warmup");
+            }
+        }
+
+        let response = serde_json::json!({
+            "status": "ok",
+            "model": model.clone(),
+            "warmed_up": true,
+            "refresh_quotas": refresh_quotas,
+            "quotas_refreshed": refreshed_models,
+        });
+
+        Ok(json_ok_response(
+            serde_json::to_vec(&response)?,
+            request_id,
+            Some("BYPASS"),
+        ))
+    }
+    .await;
+
+    track_request_outcome(
+        &state,
+        &account_id,
+        &account_email,
+        &model,
+        request_id,
+        &result,
+    )
+    .await;
+
+    result
+}
+
+#[derive(Debug, Clone)]
+struct MultipartFilePart {
+    content_type: Option<String>,
+    data: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct MultipartFormData {
+    fields: HashMap<String, Vec<String>>,
+    files: HashMap<String, Vec<MultipartFilePart>>,
+    file: Option<MultipartFilePart>,
+}
+
+fn parse_multipart_boundary(content_type: &str) -> Option<String> {
+    content_type
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix("boundary="))
+        .map(|boundary| boundary.trim_matches('"').to_string())
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if needle.is_empty() || from >= haystack.len() {
+        return None;
+    }
+    haystack[from..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|pos| from + pos)
+}
+
+fn parse_disposition_param(disposition: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    disposition
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix(&prefix))
+        .map(|value| value.trim_matches('"').to_string())
+}
+
+fn parse_multipart_form_data(body: &[u8], boundary: &str) -> Result<MultipartFormData, Error> {
+    let marker = format!("--{boundary}");
+    let next_marker = format!("\r\n--{boundary}");
+    let marker_bytes = marker.as_bytes();
+    let next_marker_bytes = next_marker.as_bytes();
+
+    let mut cursor = 0usize;
+    let mut form = MultipartFormData {
+        fields: HashMap::new(),
+        files: HashMap::new(),
+        file: None,
+    };
+
+    while let Some(start) = find_bytes(body, marker_bytes, cursor) {
+        cursor = start + marker_bytes.len();
+
+        // Final boundary marker: --{boundary}--
+        if body.get(cursor..cursor + 2) == Some(b"--") {
+            break;
+        }
+
+        if body.get(cursor..cursor + 2) == Some(b"\r\n") {
+            cursor += 2;
+        }
+
+        let headers_end = find_bytes(body, b"\r\n\r\n", cursor).ok_or_else(|| {
+            Error::Api(ApiError::InvalidRequest {
+                message: "Malformed multipart payload".to_string(),
+            })
+        })?;
+
+        let headers = String::from_utf8_lossy(&body[cursor..headers_end]);
+        let data_start = headers_end + 4;
+
+        let data_end = find_bytes(body, next_marker_bytes, data_start).ok_or_else(|| {
+            Error::Api(ApiError::InvalidRequest {
+                message: "Malformed multipart payload".to_string(),
+            })
+        })?;
+
+        let part_data = &body[data_start..data_end];
+        cursor = data_end + 2;
+
+        let mut field_name: Option<String> = None;
+        let mut filename: Option<String> = None;
+        let mut part_content_type: Option<String> = None;
+
+        for line in headers.lines() {
+            let line = line.trim();
+            let lower = line.to_ascii_lowercase();
+            if lower.starts_with("content-disposition:") {
+                field_name = parse_disposition_param(line, "name");
+                filename = parse_disposition_param(line, "filename");
+            } else if lower.starts_with("content-type:")
+                && let Some((_, value)) = line.split_once(':')
+            {
+                part_content_type = Some(value.trim().to_string());
+            }
+        }
+
+        if let Some(name) = field_name {
+            if name == "file" || filename.is_some() {
+                let file_part = MultipartFilePart {
+                    content_type: part_content_type,
+                    data: part_data.to_vec(),
+                };
+                form.files.entry(name).or_default().push(file_part.clone());
+                if form.file.is_none() {
+                    form.file = Some(file_part);
+                }
+            } else {
+                let value = String::from_utf8_lossy(part_data).trim().to_string();
+                form.fields.entry(name).or_default().push(value);
+            }
+        }
+    }
+
+    Ok(form)
+}
+
+fn multipart_first_field<'a>(
+    fields: &'a HashMap<String, Vec<String>>,
+    key: &str,
+) -> Option<&'a str> {
+    fields.get(key)?.first().map(|v| v.as_str())
+}
+
+fn multipart_field_values(fields: &HashMap<String, Vec<String>>, key: &str) -> Vec<String> {
+    fields.get(key).cloned().unwrap_or_default()
+}
+
+fn multipart_first_file<'a>(
+    multipart: &'a MultipartFormData,
+    key: &str,
+) -> Option<&'a MultipartFilePart> {
+    multipart.files.get(key).and_then(|values| values.first())
+}
+
+fn extract_text_content(content: &[crate::format::ContentBlock]) -> String {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            crate::format::ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn subtitle_timestamp(seconds: f64, webvtt: bool) -> String {
+    let total_ms = (seconds * 1000.0).round().max(0.0) as u64;
+    let ms = total_ms % 1000;
+    let total_s = total_ms / 1000;
+    let s = total_s % 60;
+    let total_m = total_s / 60;
+    let m = total_m % 60;
+    let h = total_m / 60;
+    if webvtt {
+        format!("{h:02}:{m:02}:{s:02}.{ms:03}")
+    } else {
+        format!("{h:02}:{m:02}:{s:02},{ms:03}")
+    }
+}
+
+fn to_srt(transcript: &str) -> String {
+    let start = subtitle_timestamp(0.0, false);
+    let end = subtitle_timestamp(30.0, false);
+    format!("1\n{start} --> {end}\n{}\n", transcript.trim())
+}
+
+fn to_vtt(transcript: &str) -> String {
+    let start = subtitle_timestamp(0.0, true);
+    let end = subtitle_timestamp(30.0, true);
+    format!("WEBVTT\n\n{start} --> {end}\n{}\n", transcript.trim())
+}
+
+fn build_transcription_response(
+    response_format: &str,
+    transcript: &str,
+    language: &str,
+    include_word_timestamps: bool,
+    include_segment_timestamps: bool,
+    request_id: &str,
+) -> Result<Response<ResponseBody>, Error> {
+    match response_format {
+        "text" => Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .body(full_body(Full::new(Bytes::from(transcript.to_string()))))
+            .unwrap()),
+        "srt" => Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .body(full_body(Full::new(Bytes::from(to_srt(transcript)))))
+            .unwrap()),
+        "vtt" => Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/vtt; charset=utf-8")
+            .body(full_body(Full::new(Bytes::from(to_vtt(transcript)))))
+            .unwrap()),
+        "verbose_json" => {
+            let mut response = serde_json::json!({
+                "task": "transcribe",
+                "language": language,
+                "duration": serde_json::Value::Null,
+                "text": transcript,
+            });
+
+            if include_word_timestamps {
+                response["words"] = serde_json::Value::Array(Vec::new());
+            }
+            if include_segment_timestamps {
+                response["segments"] = serde_json::json!([{
+                    "id": 0,
+                    "seek": 0,
+                    "start": 0.0,
+                    "end": 30.0,
+                    "text": transcript,
+                    "tokens": [],
+                    "temperature": 0.0,
+                    "avg_logprob": 0.0,
+                    "compression_ratio": 0.0,
+                    "no_speech_prob": 0.0
+                }]);
+            }
+
+            Ok(json_ok_response(
+                serde_json::to_vec(&response)?,
+                request_id,
+                Some("BYPASS"),
+            ))
+        }
+        _ => {
+            let response = serde_json::json!({ "text": transcript });
+            Ok(json_ok_response(
+                serde_json::to_vec(&response)?,
+                request_id,
+                Some("BYPASS"),
+            ))
+        }
+    }
+}
+
+fn parse_timestamp_granularities(fields: &HashMap<String, Vec<String>>) -> (bool, bool) {
+    let mut values = multipart_field_values(fields, "timestamp_granularities[]");
+    values.extend(multipart_field_values(fields, "timestamp_granularities"));
+    let has_word = values.iter().any(|v| v.eq_ignore_ascii_case("word"));
+    let has_segment = values.iter().any(|v| v.eq_ignore_ascii_case("segment"));
+
+    // Default behavior is segment-level timestamps when not specified.
+    if values.is_empty() {
+        (false, true)
+    } else {
+        (has_word, has_segment)
+    }
+}
+
+#[cfg(test)]
+fn mock_upstream_enabled(headers: &hyper::HeaderMap) -> bool {
+    headers
+        .get("x-agcp-mock-upstream")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("1") || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+async fn handle_audio_transcriptions(
+    req: Request<hyper::body::Incoming>,
+    state: Arc<ServerState>,
+    request_id: &str,
+) -> Result<Response<ResponseBody>, Error> {
+    #[cfg(test)]
+    let mock_upstream = mock_upstream_enabled(req.headers());
+    #[cfg(not(test))]
+    let mock_upstream = false;
+
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !content_type.starts_with("multipart/form-data") {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Content-Type must be multipart/form-data",
+            "invalid_request_error",
+        ));
+    }
+
+    let Some(boundary) = parse_multipart_boundary(content_type) else {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Missing multipart boundary",
+            "invalid_request_error",
+        ));
+    };
+
+    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let multipart = parse_multipart_form_data(&body_bytes, &boundary)?;
+    let Some(file) = multipart.file else {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Missing required multipart field 'file'",
+            "invalid_request_error",
+        ));
+    };
+
+    if file.data.is_empty() {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Uploaded audio file is empty",
+            "invalid_request_error",
+        ));
+    }
+
+    let response_format = multipart
+        .fields
+        .get("response_format")
+        .and_then(|values| values.first())
+        .map(|s| s.as_str())
+        .unwrap_or("json");
+    if !matches!(
+        response_format,
+        "json" | "text" | "verbose_json" | "srt" | "vtt"
+    ) {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Unsupported response_format (supported: json, text, verbose_json, srt, vtt)",
+            "invalid_request_error",
+        ));
+    }
+
+    let (include_word_timestamps, include_segment_timestamps) =
+        parse_timestamp_granularities(&multipart.fields);
+    let language = multipart_first_field(&multipart.fields, "language")
+        .filter(|lang| !lang.trim().is_empty())
+        .unwrap_or("unknown")
+        .to_string();
+
+    if mock_upstream {
+        return build_transcription_response(
+            response_format,
+            "mock transcription from agcp test upstream",
+            &language,
+            include_word_timestamps,
+            include_segment_timestamps,
+            request_id,
+        );
+    }
+
+    let requested_model = multipart
+        .fields
+        .get("model")
+        .and_then(|values| values.first().cloned())
+        .unwrap_or_else(|| "gemini-3-flash".to_string());
+    let config = get_config();
+    let model = resolve_with_mappings(
+        &requested_model,
+        &config.mappings.rules,
+        &config.mappings.background_task_model,
+    );
+
+    let mut instruction =
+        "Transcribe the provided audio verbatim. Return only the transcription.".to_string();
+    if let Some(language_hint) = multipart_first_field(&multipart.fields, "language")
+        && !language_hint.trim().is_empty()
+    {
+        instruction.push_str(&format!(" The expected language is '{language_hint}'."));
+    }
+    if let Some(prompt) = multipart_first_field(&multipart.fields, "prompt")
+        && !prompt.trim().is_empty()
+    {
+        instruction.push_str(&format!(" Additional context: {prompt}"));
+    }
+
+    let media_type = file.content_type.unwrap_or_else(|| "audio/wav".to_string());
+    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(file.data);
+
+    let messages_request = MessagesRequest {
+        model: model.clone(),
+        messages: vec![crate::format::anthropic::Message {
+            role: crate::format::anthropic::Role::User,
+            content: crate::format::anthropic::MessageContent::Blocks(vec![
+                crate::format::anthropic::ContentBlock::Document {
+                    source: crate::format::anthropic::DocumentSource {
+                        source_type: "base64".to_string(),
+                        media_type,
+                        data: audio_b64,
+                    },
+                    cache_control: None,
+                },
+                crate::format::anthropic::ContentBlock::Text {
+                    text: instruction,
+                    cache_control: None,
+                },
+            ]),
+        }],
+        max_tokens: 4096,
+        stream: false,
+        system: None,
+        tools: None,
+        temperature: Some(0.0),
+        top_p: None,
+        top_k: None,
+        stop_sequences: None,
+        tool_choice: None,
+        thinking: None,
+        response_format: None,
+        candidate_count: None,
+    };
+
+    get_stats().record_request(&model, "/v1/audio/transcriptions");
+
+    let response =
+        execute_messages_request(&messages_request, &state, request_id, false, true).await?;
+    let response_bytes = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|_| Error::Http("Failed reading transcription response body".to_string()))?
+        .to_bytes();
+
+    let anthropic_response: crate::format::anthropic::MessagesResponse =
+        serde_json::from_slice(&response_bytes)?;
+    let transcript = extract_text_content(&anthropic_response.content);
+
+    if transcript.trim().is_empty() {
+        return Ok(openai_error_response(
+            StatusCode::BAD_GATEWAY,
+            "Transcription model returned no text",
+            "api_error",
+        ));
+    }
+
+    build_transcription_response(
+        response_format,
+        &transcript,
+        &language,
+        include_word_timestamps,
+        include_segment_timestamps,
+        request_id,
+    )
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ImagesGenerationsRequest {
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    n: Option<u32>,
+    #[serde(default)]
+    response_format: Option<String>,
+    #[serde(default)]
+    size: Option<String>,
+    #[serde(default)]
+    quality: Option<String>,
+    #[serde(default)]
+    style: Option<String>,
+    #[serde(default)]
+    user: Option<String>,
+}
+
+fn extract_image_items_from_google_response(
+    response: crate::format::google::GenerateContentResponse,
+    response_format: &str,
+) -> Result<(Vec<serde_json::Value>, Option<String>), String> {
+    let mut data_items = Vec::new();
+    let mut revised_prompt: Option<String> = None;
+
+    if let Some(candidates) = response.candidates {
+        for candidate in candidates {
+            if let Some(content) = candidate.content {
+                for part in content.parts {
+                    match part {
+                        GooglePart::InlineData(inline) => {
+                            let mime_type = inline.inline_data.mime_type;
+                            let b64_data = inline.inline_data.data;
+                            if response_format == "url" {
+                                data_items.push(serde_json::json!({
+                                    "url": format!("data:{mime_type};base64,{b64_data}")
+                                }));
+                            } else {
+                                data_items.push(serde_json::json!({
+                                    "b64_json": b64_data
+                                }));
+                            }
+                        }
+                        GooglePart::Text(text) => {
+                            if revised_prompt.is_none() && !text.text.trim().is_empty() {
+                                revised_prompt = Some(text.text.trim().to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    if data_items.is_empty() {
+        let message = if revised_prompt.is_some() {
+            "Upstream model returned text instead of image data"
+        } else {
+            "Upstream model did not return any image data"
+        };
+        return Err(message.to_string());
+    }
+
+    if let Some(revised) = &revised_prompt {
+        for item in &mut data_items {
+            if let Some(obj) = item.as_object_mut() {
+                obj.insert(
+                    "revised_prompt".to_string(),
+                    serde_json::Value::String(revised.clone()),
+                );
+            }
+        }
+    }
+
+    Ok((data_items, revised_prompt))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ImageEditMode {
+    Edits,
+    Variations,
+}
+
+impl ImageEditMode {
+    fn route(self) -> &'static str {
+        match self {
+            ImageEditMode::Edits => "/v1/images/edits",
+            ImageEditMode::Variations => "/v1/images/variations",
+        }
+    }
+
+    fn action(self) -> &'static str {
+        match self {
+            ImageEditMode::Edits => "Edit the provided image according to the prompt.",
+            ImageEditMode::Variations => "Create variations of the provided image.",
+        }
+    }
+
+    fn requires_prompt(self) -> bool {
+        matches!(self, ImageEditMode::Edits)
+    }
+}
+
+fn validate_openai_image_params(
+    response_format: &str,
+    candidate_count: u32,
+    size: Option<&str>,
+    quality: Option<&str>,
+    style: Option<&str>,
+) -> Option<Response<ResponseBody>> {
+    if !matches!(response_format, "b64_json" | "url") {
+        return Some(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Unsupported response_format (supported: b64_json, url)",
+            "invalid_request_error",
+        ));
+    }
+
+    if !(1..=10).contains(&candidate_count) {
+        return Some(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "n must be between 1 and 10",
+            "invalid_request_error",
+        ));
+    }
+
+    if let Some(size) = size {
+        let valid_sizes = [
+            "256x256",
+            "512x512",
+            "1024x1024",
+            "1024x1536",
+            "1536x1024",
+            "auto",
+        ];
+        if !valid_sizes.iter().any(|s| s == &size) {
+            return Some(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                "Unsupported size (supported: 256x256, 512x512, 1024x1024, 1024x1536, 1536x1024, auto)",
+                "invalid_request_error",
+            ));
+        }
+    }
+
+    if let Some(quality) = quality {
+        let valid_qualities = ["low", "medium", "high", "standard", "hd", "auto"];
+        if !valid_qualities.iter().any(|q| q == &quality) {
+            return Some(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                "Unsupported quality (supported: low, medium, high, standard, hd, auto)",
+                "invalid_request_error",
+            ));
+        }
+    }
+
+    if let Some(style) = style {
+        let valid_styles = ["vivid", "natural"];
+        if !valid_styles.iter().any(|s| s == &style) {
+            return Some(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                "Unsupported style (supported: vivid, natural)",
+                "invalid_request_error",
+            ));
+        }
+    }
+
+    None
+}
+
+fn build_mock_image_response(
+    response_format: &str,
+    candidate_count: u32,
+    revised_prompt_seed: &str,
+) -> serde_json::Value {
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let revised_prompt = format!("mock revised prompt for: {}", revised_prompt_seed.trim());
+    let mut items = Vec::new();
+    for i in 0..candidate_count {
+        let item = if response_format == "url" {
+            serde_json::json!({
+                "url": format!("data:image/png;base64,MOCK_IMAGE_DATA_{}", i + 1),
+                "revised_prompt": revised_prompt,
+            })
+        } else {
+            serde_json::json!({
+                "b64_json": format!("MOCK_IMAGE_DATA_{}", i + 1),
+                "revised_prompt": revised_prompt,
+            })
+        };
+        items.push(item);
+    }
+    serde_json::json!({
+        "created": created,
+        "data": items
+    })
+}
+
+fn image_file_to_google_part(file: &MultipartFilePart, default_mime: &str) -> GooglePart {
+    let mime_type = file
+        .content_type
+        .as_deref()
+        .filter(|m| m.starts_with("image/"))
+        .unwrap_or(default_mime)
+        .to_string();
+    let data = base64::engine::general_purpose::STANDARD.encode(&file.data);
+    GooglePart::InlineData(crate::format::google::InlineDataPart {
+        inline_data: crate::format::google::InlineData { mime_type, data },
+    })
+}
+
+fn collect_candidate_image_files(multipart: &MultipartFormData) -> Vec<&MultipartFilePart> {
+    let mut keys: Vec<&str> = multipart.files.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+
+    let mut files = Vec::new();
+    for key in keys {
+        if (key == "image" || key == "file" || key.starts_with("image"))
+            && let Some(values) = multipart.files.get(key)
+        {
+            files.extend(values.iter());
+        }
+    }
+    files
+}
+
+fn select_primary_image(multipart: &MultipartFormData) -> Option<&MultipartFilePart> {
+    multipart_first_file(multipart, "image")
+        .or_else(|| multipart_first_file(multipart, "file"))
+        .or_else(|| {
+            let mut keys: Vec<&str> = multipart.files.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            for key in keys {
+                if key.starts_with("image")
+                    && let Some(file) = multipart_first_file(multipart, key)
+                {
+                    return Some(file);
+                }
+            }
+            None
+        })
+}
+
+async fn handle_images_edit_like(
+    req: Request<hyper::body::Incoming>,
+    state: Arc<ServerState>,
+    request_id: &str,
+    mode: ImageEditMode,
+) -> Result<Response<ResponseBody>, Error> {
+    #[cfg(test)]
+    let mock_upstream = mock_upstream_enabled(req.headers());
+    #[cfg(not(test))]
+    let mock_upstream = false;
+
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !content_type.starts_with("multipart/form-data") {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Content-Type must be multipart/form-data",
+            "invalid_request_error",
+        ));
+    }
+
+    let Some(boundary) = parse_multipart_boundary(content_type) else {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Missing multipart boundary",
+            "invalid_request_error",
+        ));
+    };
+
+    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let multipart = parse_multipart_form_data(&body_bytes, &boundary)?;
+
+    let Some(primary_image) = select_primary_image(&multipart) else {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Missing required multipart field 'image'",
+            "invalid_request_error",
+        ));
+    };
+    if primary_image.data.is_empty() {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Uploaded image is empty",
+            "invalid_request_error",
+        ));
+    }
+
+    let prompt = multipart_first_field(&multipart.fields, "prompt")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if mode.requires_prompt() && prompt.is_empty() {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Missing required multipart field 'prompt'",
+            "invalid_request_error",
+        ));
+    }
+
+    let response_format = multipart_first_field(&multipart.fields, "response_format")
+        .unwrap_or("b64_json")
+        .to_string();
+    let candidate_count = multipart_first_field(&multipart.fields, "n")
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(1);
+    let size = multipart_first_field(&multipart.fields, "size");
+    let quality = multipart_first_field(&multipart.fields, "quality");
+    let style = multipart_first_field(&multipart.fields, "style");
+    let user = multipart_first_field(&multipart.fields, "user");
+    let mask = multipart_first_file(&multipart, "mask");
+
+    if let Some(validation_error) =
+        validate_openai_image_params(&response_format, candidate_count, size, quality, style)
+    {
+        return Ok(validation_error);
+    }
+
+    let requested_model = multipart_first_field(&multipart.fields, "model")
+        .unwrap_or("gemini-3-flash")
+        .to_string();
+    let config = get_config();
+    let model = resolve_with_mappings(
+        &requested_model,
+        &config.mappings.rules,
+        &config.mappings.background_task_model,
+    );
+    get_stats().record_request(&model, mode.route());
+
+    let prompt_seed = if prompt.is_empty() {
+        mode.action().to_string()
+    } else {
+        prompt.clone()
+    };
+    if mock_upstream {
+        let body = build_mock_image_response(&response_format, candidate_count, &prompt_seed);
+        return Ok(json_ok_response(
+            serde_json::to_vec(&body)?,
+            request_id,
+            Some("BYPASS"),
+        ));
+    }
+
+    let (access_token, project_id, account_id, account_email) =
+        get_account_credentials(&state, &model).await?;
+
+    let mut instruction = format!("{} Return image data only.", mode.action());
+    if !prompt.is_empty() {
+        instruction.push_str(&format!("\n\nPrompt: {prompt}"));
+    }
+    if let Some(size) = size {
+        instruction.push_str(&format!(" Preferred size: {size}."));
+    }
+    if let Some(quality) = quality {
+        instruction.push_str(&format!(" Preferred quality: {quality}."));
+    }
+    if let Some(style) = style {
+        instruction.push_str(&format!(" Preferred style: {style}."));
+    }
+    if let Some(user) = user {
+        instruction.push_str(&format!(" User context: {user}."));
+    }
+    if mask.is_some() && matches!(mode, ImageEditMode::Edits) {
+        instruction.push_str(" Use the provided mask to focus edits.");
+    }
+
+    let mut parts = vec![GooglePart::Text(GoogleTextPart { text: instruction })];
+    parts.push(image_file_to_google_part(primary_image, "image/png"));
+
+    if matches!(mode, ImageEditMode::Edits)
+        && let Some(mask_file) = mask
+    {
+        parts.push(image_file_to_google_part(mask_file, "image/png"));
+    }
+
+    let candidate_files = collect_candidate_image_files(&multipart);
+    let mut consumed_primary = false;
+    for file in candidate_files {
+        if !consumed_primary && std::ptr::eq(file, primary_image) {
+            consumed_primary = true;
+            continue;
+        }
+        parts.push(image_file_to_google_part(file, "image/png"));
+    }
+
+    let google_request = GoogleGenerateContentRequest {
+        contents: vec![GoogleContent {
+            role: "user".to_string(),
+            parts,
+        }],
+        system_instruction: None,
+        generation_config: Some(GoogleGenerationConfig {
+            response_mime_type: Some("image/png".to_string()),
+            candidate_count: Some(candidate_count),
+            ..GoogleGenerationConfig::default()
+        }),
+        tools: None,
+        tool_config: None,
+        session_id: None,
+    };
+
+    let cc_request =
+        build_gemini_cloudcode_request(&project_id, &model, google_request, request_id);
+    let request_body = Bytes::from(serde_json::to_vec(&cc_request)?);
+
+    let result = async {
+        let response = state
+            .cloudcode_client
+            .send_request(request_body, &access_token, &model)
+            .await?;
+
+        record_google_usage(&model, response.usage_metadata.as_ref());
+
+        let (data_items, _revised_prompt) =
+            match extract_image_items_from_google_response(response, &response_format) {
+                Ok(values) => values,
+                Err(message) => {
+                    return Ok(openai_error_response(
+                        StatusCode::BAD_GATEWAY,
+                        &message,
+                        "api_error",
+                    ));
+                }
+            };
+
+        if data_items.is_empty() {
+            return Ok(openai_error_response(
+                StatusCode::BAD_GATEWAY,
+                "Upstream model did not return any image data",
+                "api_error",
+            ));
+        }
+
+        let created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let image_response = serde_json::json!({
+            "created": created,
+            "data": data_items
+        });
+
+        Ok(json_ok_response(
+            serde_json::to_vec(&image_response)?,
+            request_id,
+            Some("BYPASS"),
+        ))
+    }
+    .await;
+
+    track_request_outcome(
+        &state,
+        &account_id,
+        &account_email,
+        &model,
+        request_id,
+        &result,
+    )
+    .await;
+
+    result
+}
+
+async fn handle_images_generations(
+    req: Request<hyper::body::Incoming>,
+    state: Arc<ServerState>,
+    request_id: &str,
+) -> Result<Response<ResponseBody>, Error> {
+    #[cfg(test)]
+    let mock_upstream = mock_upstream_enabled(req.headers());
+    #[cfg(not(test))]
+    let mock_upstream = false;
+
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !content_type.contains("application/json") {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Content-Type must be application/json",
+            "invalid_request_error",
+        ));
+    }
+
+    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let request: ImagesGenerationsRequest = match serde_json::from_slice(&body_bytes) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            return Ok(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid JSON: {e}"),
+                "invalid_request_error",
+            ));
+        }
+    };
+
+    let Some(prompt) = request.prompt else {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Missing required field: prompt",
+            "invalid_request_error",
+        ));
+    };
+
+    if prompt.trim().is_empty() {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "prompt cannot be empty",
+            "invalid_request_error",
+        ));
+    }
+
+    let response_format = request
+        .response_format
+        .unwrap_or_else(|| "b64_json".to_string());
+    if !matches!(response_format.as_str(), "b64_json" | "url") {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Unsupported response_format (supported: b64_json, url)",
+            "invalid_request_error",
+        ));
+    }
+
+    let candidate_count = request.n.unwrap_or(1);
+    if !(1..=10).contains(&candidate_count) {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "n must be between 1 and 10",
+            "invalid_request_error",
+        ));
+    }
+
+    if let Some(size) = &request.size {
+        let valid_sizes = [
+            "256x256",
+            "512x512",
+            "1024x1024",
+            "1024x1536",
+            "1536x1024",
+            "auto",
+        ];
+        if !valid_sizes.iter().any(|s| s == size) {
+            return Ok(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                "Unsupported size (supported: 256x256, 512x512, 1024x1024, 1024x1536, 1536x1024, auto)",
+                "invalid_request_error",
+            ));
+        }
+    }
+
+    if let Some(quality) = &request.quality {
+        let valid_qualities = ["low", "medium", "high", "standard", "hd", "auto"];
+        if !valid_qualities.iter().any(|q| q == quality) {
+            return Ok(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                "Unsupported quality (supported: low, medium, high, standard, hd, auto)",
+                "invalid_request_error",
+            ));
+        }
+    }
+
+    if let Some(style) = &request.style {
+        let valid_styles = ["vivid", "natural"];
+        if !valid_styles.iter().any(|s| s == style) {
+            return Ok(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                "Unsupported style (supported: vivid, natural)",
+                "invalid_request_error",
+            ));
+        }
+    }
+
+    let requested_model = request
+        .model
+        .unwrap_or_else(|| "gemini-3-flash".to_string());
+    let config = get_config();
+    let model = resolve_with_mappings(
+        &requested_model,
+        &config.mappings.rules,
+        &config.mappings.background_task_model,
+    );
+
+    get_stats().record_request(&model, "/v1/images/generations");
+
+    if mock_upstream {
+        let created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let revised_prompt = format!("mock revised prompt for: {}", prompt.trim());
+        let mut items = Vec::new();
+        for i in 0..candidate_count {
+            let item = if response_format == "url" {
+                serde_json::json!({
+                    "url": format!("data:image/png;base64,MOCK_IMAGE_DATA_{}", i + 1),
+                    "revised_prompt": revised_prompt,
+                })
+            } else {
+                serde_json::json!({
+                    "b64_json": format!("MOCK_IMAGE_DATA_{}", i + 1),
+                    "revised_prompt": revised_prompt,
+                })
+            };
+            items.push(item);
+        }
+        let body = serde_json::json!({
+            "created": created,
+            "data": items
+        });
+        return Ok(json_ok_response(
+            serde_json::to_vec(&body)?,
+            request_id,
+            Some("BYPASS"),
+        ));
+    }
+
+    let (access_token, project_id, account_id, account_email) =
+        get_account_credentials(&state, &model).await?;
+
+    let mut prompt_text =
+        "Generate an image for the following prompt. Return image data only.".to_string();
+    if let Some(size) = request.size {
+        prompt_text.push_str(&format!(" Preferred size: {size}."));
+    }
+    if let Some(quality) = request.quality {
+        prompt_text.push_str(&format!(" Preferred quality: {quality}."));
+    }
+    if let Some(style) = request.style {
+        prompt_text.push_str(&format!(" Preferred style: {style}."));
+    }
+    if let Some(user) = request.user {
+        prompt_text.push_str(&format!(" User context: {user}."));
+    }
+    prompt_text.push_str(&format!("\n\nPrompt: {prompt}"));
+
+    let google_request = GoogleGenerateContentRequest {
+        contents: vec![GoogleContent {
+            role: "user".to_string(),
+            parts: vec![GooglePart::Text(GoogleTextPart { text: prompt_text })],
+        }],
+        system_instruction: None,
+        generation_config: Some(GoogleGenerationConfig {
+            response_mime_type: Some("image/png".to_string()),
+            candidate_count: Some(candidate_count),
+            ..GoogleGenerationConfig::default()
+        }),
+        tools: None,
+        tool_config: None,
+        session_id: None,
+    };
+
+    let cc_request =
+        build_gemini_cloudcode_request(&project_id, &model, google_request, request_id);
+    let request_body = Bytes::from(serde_json::to_vec(&cc_request)?);
+
+    let result = async {
+        let response = state
+            .cloudcode_client
+            .send_request(request_body, &access_token, &model)
+            .await?;
+
+        record_google_usage(&model, response.usage_metadata.as_ref());
+
+        let (data_items, _revised_prompt) =
+            match extract_image_items_from_google_response(response, &response_format) {
+                Ok(values) => values,
+                Err(message) => {
+                    return Ok(openai_error_response(
+                        StatusCode::BAD_GATEWAY,
+                        &message,
+                        "api_error",
+                    ));
+                }
+            };
+
+        if data_items.is_empty() {
+            return Ok(openai_error_response(
+                StatusCode::BAD_GATEWAY,
+                "Upstream model did not return any image data",
+                "api_error",
+            ));
+        }
+
+        let created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let image_response = serde_json::json!({
+            "created": created,
+            "data": data_items
+        });
+
+        Ok(json_ok_response(
+            serde_json::to_vec(&image_response)?,
+            request_id,
+            Some("BYPASS"),
+        ))
+    }
+    .await;
+
+    track_request_outcome(
+        &state,
+        &account_id,
+        &account_email,
+        &model,
+        request_id,
+        &result,
+    )
+    .await;
+
+    result
 }
 
 /// Count approximate character length of a content block.
@@ -2807,6 +4807,40 @@ mod tests {
         (status_code, body)
     }
 
+    fn build_multipart_body(
+        boundary: &str,
+        fields: &[(&str, &str)],
+        file_name: &str,
+        file_content_type: &str,
+        file_data: &str,
+    ) -> String {
+        build_multipart_body_with_files(
+            boundary,
+            fields,
+            &[("file", file_name, file_content_type, file_data)],
+        )
+    }
+
+    fn build_multipart_body_with_files(
+        boundary: &str,
+        fields: &[(&str, &str)],
+        files: &[(&str, &str, &str, &str)],
+    ) -> String {
+        let mut body = String::new();
+        for (name, value) in fields {
+            body.push_str(&format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            ));
+        }
+        for (field_name, file_name, file_content_type, file_data) in files {
+            body.push_str(&format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{field_name}\"; filename=\"{file_name}\"\r\nContent-Type: {file_content_type}\r\n\r\n{file_data}\r\n"
+            ));
+        }
+        body.push_str(&format!("--{boundary}--\r\n"));
+        body
+    }
+
     // -- Health check --
 
     #[tokio::test]
@@ -2912,6 +4946,288 @@ mod tests {
         assert!(body.contains(r#""status":"ok"#), "body: {body}");
     }
 
+    // -- Internal warmup --
+
+    #[tokio::test]
+    async fn test_internal_warmup_no_accounts() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"model":"gemini-3-flash"}"#;
+        let req = format!(
+            "POST /internal/warmup HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, _body) = http_request(addr, &req).await;
+        assert_eq!(status, 503, "expected 503 when no accounts are configured");
+    }
+
+    // -- Native Gemini API --
+
+    #[tokio::test]
+    async fn test_gemini_models_endpoint() {
+        let addr = spawn_test_server().await;
+        let (status, body) = http_request(
+            addr,
+            "GET /v1beta/models HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(
+            body.contains("models/gemini-3-flash"),
+            "body should list Gemini models: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_gemini_count_tokens_endpoint() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"contents":[{"role":"user","parts":[{"text":"Hello from Gemini"}]}]}"#;
+        let req = format!(
+            "POST /v1beta/models/gemini-3-flash:countTokens HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(body.contains("totalTokens"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_models_detect_endpoint() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"model":"flash"}"#;
+        let req = format!(
+            "POST /v1/models/detect HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(body.contains(r#""model":"flash""#), "body: {body}");
+        assert!(
+            body.contains(r#""mapped_model":"gemini-3-flash""#),
+            "body: {body}"
+        );
+        assert!(body.contains(r#""type":"gemini""#), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_models_detect_missing_model() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{}"#;
+        let req = format!(
+            "POST /v1/models/detect HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, _body) = http_request(addr, &req).await;
+        assert_eq!(status, 400, "expected 400 when model is missing");
+    }
+
+    // -- OpenAI Images / Audio --
+
+    #[tokio::test]
+    async fn test_images_generation_missing_prompt() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{}"#;
+        let req = format!(
+            "POST /v1/images/generations HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, _body) = http_request(addr, &req).await;
+        assert_eq!(status, 400, "expected 400 when prompt is missing");
+    }
+
+    #[tokio::test]
+    async fn test_images_edits_missing_image() {
+        let addr = spawn_test_server().await;
+        let boundary = "---------------------------agcp-test-boundary-edit-missing";
+        let body = build_multipart_body_with_files(
+            boundary,
+            &[("prompt", "make it brighter")],
+            &[("mask", "mask.png", "image/png", "MASKDATA")],
+        );
+        let req = format!(
+            "POST /v1/images/edits HTTP/1.1\r\nHost: localhost\r\nContent-Type: multipart/form-data; boundary={}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            boundary,
+            body.len(),
+            body
+        );
+        let (status, _body) = http_request(addr, &req).await;
+        assert_eq!(status, 400, "expected 400 when image is missing");
+    }
+
+    #[tokio::test]
+    async fn test_images_edits_mock_success() {
+        let addr = spawn_test_server().await;
+        let boundary = "---------------------------agcp-test-boundary-edit";
+        let body = build_multipart_body_with_files(
+            boundary,
+            &[
+                ("prompt", "make it brighter"),
+                ("response_format", "b64_json"),
+                ("n", "1"),
+            ],
+            &[("image", "input.png", "image/png", "IMAGEBYTES")],
+        );
+        let req = format!(
+            "POST /v1/images/edits HTTP/1.1\r\nHost: localhost\r\nX-AGCP-Mock-Upstream: 1\r\nContent-Type: multipart/form-data; boundary={}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            boundary,
+            body.len(),
+            body
+        );
+        let (status, response_body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {response_body}");
+        assert!(
+            response_body.contains("MOCK_IMAGE_DATA_1"),
+            "body: {response_body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_images_variations_mock_success() {
+        let addr = spawn_test_server().await;
+        let boundary = "---------------------------agcp-test-boundary-variation";
+        let body = build_multipart_body_with_files(
+            boundary,
+            &[("response_format", "url"), ("n", "1")],
+            &[("image", "input.png", "image/png", "IMAGEBYTES")],
+        );
+        let req = format!(
+            "POST /v1/images/variations HTTP/1.1\r\nHost: localhost\r\nX-AGCP-Mock-Upstream: 1\r\nContent-Type: multipart/form-data; boundary={}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            boundary,
+            body.len(),
+            body
+        );
+        let (status, response_body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {response_body}");
+        assert!(
+            response_body.contains("data:image/png;base64"),
+            "body: {response_body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_audio_transcriptions_requires_multipart() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{}"#;
+        let req = format!(
+            "POST /v1/audio/transcriptions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, _body) = http_request(addr, &req).await;
+        assert_eq!(status, 400, "expected 400 for non-multipart audio request");
+    }
+
+    // -- Mocked upstream success paths --
+
+    #[tokio::test]
+    async fn test_gemini_generate_content_mock_success() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"contents":[{"role":"user","parts":[{"text":"Hello Gemini"}]}]}"#;
+        let req = format!(
+            "POST /v1beta/models/gemini-3-flash:generateContent HTTP/1.1\r\nHost: localhost\r\nX-AGCP-Mock-Upstream: 1\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(body.contains("mock-gemini-response"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_gemini_stream_generate_content_mock_success() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"contents":[{"role":"user","parts":[{"text":"Hello Gemini stream"}]}]}"#;
+        let req = format!(
+            "POST /v1beta/models/gemini-3-flash:streamGenerateContent HTTP/1.1\r\nHost: localhost\r\nX-AGCP-Mock-Upstream: 1\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(body.contains("data:"), "body: {body}");
+        assert!(body.contains("mock stream chunk"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_images_generation_mock_success_with_revised_prompt() {
+        let addr = spawn_test_server().await;
+        let payload =
+            r#"{"prompt":"A watercolor fox in a city","response_format":"b64_json","n":2}"#;
+        let req = format!(
+            "POST /v1/images/generations HTTP/1.1\r\nHost: localhost\r\nX-AGCP-Mock-Upstream: 1\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(body.contains("MOCK_IMAGE_DATA_1"), "body: {body}");
+        assert!(body.contains("revised_prompt"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_audio_transcriptions_mock_success_json() {
+        let addr = spawn_test_server().await;
+        let boundary = "---------------------------agcp-test-boundary";
+        let body = build_multipart_body(
+            boundary,
+            &[
+                ("model", "gemini-3-flash"),
+                ("response_format", "json"),
+                ("language", "en"),
+            ],
+            "sample.wav",
+            "audio/wav",
+            "RIFFMOCKAUDIO",
+        );
+        let req = format!(
+            "POST /v1/audio/transcriptions HTTP/1.1\r\nHost: localhost\r\nX-AGCP-Mock-Upstream: 1\r\nContent-Type: multipart/form-data; boundary={}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            boundary,
+            body.len(),
+            body
+        );
+        let (status, response_body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {response_body}");
+        assert!(
+            response_body.contains("mock transcription from agcp test upstream"),
+            "body: {response_body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_audio_transcriptions_mock_success_vtt() {
+        let addr = spawn_test_server().await;
+        let boundary = "---------------------------agcp-test-boundary-vtt";
+        let body = build_multipart_body(
+            boundary,
+            &[
+                ("model", "gemini-3-flash"),
+                ("response_format", "vtt"),
+                ("timestamp_granularities[]", "word"),
+                ("timestamp_granularities[]", "segment"),
+            ],
+            "sample.wav",
+            "audio/wav",
+            "RIFFMOCKAUDIO",
+        );
+        let req = format!(
+            "POST /v1/audio/transcriptions HTTP/1.1\r\nHost: localhost\r\nX-AGCP-Mock-Upstream: 1\r\nContent-Type: multipart/form-data; boundary={}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            boundary,
+            body.len(),
+            body
+        );
+        let (status, response_body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {response_body}");
+        assert!(response_body.contains("WEBVTT"), "body: {response_body}");
+        assert!(
+            response_body.contains("mock transcription from agcp test upstream"),
+            "body: {response_body}"
+        );
+    }
+
     // -- Cache endpoints --
 
     #[tokio::test]
@@ -3012,6 +5328,48 @@ mod tests {
         assert_eq!(
             status, 400,
             "expected 400 for excessive max_tokens, body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_messages_warmup_intercept_non_stream() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"model":"claude-sonnet-4-5","max_tokens":8,"stream":false,"messages":[{"role":"user","content":"Warmup ping"}]}"#;
+        let req = format!(
+            "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{payload}",
+            payload.len()
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(body.contains(r#""text":"OK""#), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_messages_warmup_intercept_stream() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"model":"claude-sonnet-4-5","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"Warmup ping"}]}"#;
+        let req = format!(
+            "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{payload}",
+            payload.len()
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(body.contains("event: message_start"), "body: {body}");
+        assert!(body.contains("event: message_stop"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_messages_non_warmup_not_intercepted_without_accounts() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"model":"claude-sonnet-4-5","max_tokens":8,"stream":false,"messages":[{"role":"user","content":"continue"}]}"#;
+        let req = format!(
+            "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{payload}",
+            payload.len()
+        );
+        let (status, _body) = http_request(addr, &req).await;
+        assert_eq!(
+            status, 401,
+            "expected auth/account failure for non-warmup messages with no accounts"
         );
     }
 }

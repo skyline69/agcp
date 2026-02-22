@@ -113,6 +113,12 @@ pub struct ServerConfig {
     /// Request timeout in seconds (default: 300 = 5 minutes)
     #[serde(default = "default_request_timeout")]
     pub request_timeout_secs: u64,
+    /// Enable warmup request interception on Anthropic message endpoints.
+    #[serde(default = "default_warmup_intercept_enabled")]
+    pub warmup_intercept_enabled: bool,
+    /// Maximum text length considered for warmup detection.
+    #[serde(default = "default_warmup_intercept_max_text_len")]
+    pub warmup_intercept_max_text_len: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -135,6 +141,15 @@ pub struct AccountsConfig {
     /// Enable model fallback on quota exhaustion
     #[serde(default)]
     pub fallback: bool,
+    /// Run a lightweight warmup request when the server starts.
+    #[serde(default = "default_warmup_on_startup")]
+    pub warmup_on_startup: bool,
+    /// Model to use for startup warmup.
+    #[serde(default = "default_warmup_model")]
+    pub warmup_model: String,
+    /// Periodic quota refresh interval in seconds (0 disables periodic refresh).
+    #[serde(default = "default_quota_refresh_interval_secs")]
+    pub quota_refresh_interval_secs: u64,
 }
 
 fn default_strategy() -> String {
@@ -145,12 +160,35 @@ fn default_quota_threshold() -> f64 {
     0.1
 }
 
+fn default_warmup_on_startup() -> bool {
+    true
+}
+
+fn default_warmup_model() -> String {
+    "gemini-3-flash".to_string()
+}
+
+fn default_quota_refresh_interval_secs() -> u64 {
+    900
+}
+
+fn default_warmup_intercept_enabled() -> bool {
+    true
+}
+
+fn default_warmup_intercept_max_text_len() -> usize {
+    100
+}
+
 impl Default for AccountsConfig {
     fn default() -> Self {
         Self {
             strategy: default_strategy(),
             quota_threshold: default_quota_threshold(),
             fallback: false,
+            warmup_on_startup: default_warmup_on_startup(),
+            warmup_model: default_warmup_model(),
+            quota_refresh_interval_secs: default_quota_refresh_interval_secs(),
         }
     }
 }
@@ -319,6 +357,8 @@ impl Default for ServerConfig {
             host: default_host(),
             api_key: None,
             request_timeout_secs: default_request_timeout(),
+            warmup_intercept_enabled: default_warmup_intercept_enabled(),
+            warmup_intercept_max_text_len: default_warmup_intercept_max_text_len(),
         }
     }
 }
@@ -371,6 +411,28 @@ impl Config {
                     field: "accounts.quota_threshold".to_string(),
                     value: config.accounts.quota_threshold.to_string(),
                     valid_values: vec!["0.0 to 1.0".to_string()],
+                });
+            }
+
+            // Validate warmup model
+            if config.accounts.warmup_model.trim().is_empty() {
+                return Err(ConfigError::InvalidValue {
+                    path,
+                    field: "accounts.warmup_model".to_string(),
+                    value: config.accounts.warmup_model,
+                    valid_values: vec!["non-empty model id".to_string()],
+                });
+            }
+
+            // Validate warmup interception text length
+            if config.server.warmup_intercept_max_text_len == 0
+                || config.server.warmup_intercept_max_text_len > 4096
+            {
+                return Err(ConfigError::InvalidValue {
+                    path,
+                    field: "server.warmup_intercept_max_text_len".to_string(),
+                    value: config.server.warmup_intercept_max_text_len.to_string(),
+                    valid_values: vec!["1 to 4096".to_string()],
                 });
             }
 
@@ -514,8 +576,13 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.host, "127.0.0.1");
+        assert!(config.server.warmup_intercept_enabled);
+        assert_eq!(config.server.warmup_intercept_max_text_len, 100);
         assert!(!config.logging.debug);
         assert!(!config.logging.log_requests);
+        assert!(config.accounts.warmup_on_startup);
+        assert_eq!(config.accounts.warmup_model, "gemini-3-flash");
+        assert_eq!(config.accounts.quota_refresh_interval_secs, 900);
     }
 
     #[test]

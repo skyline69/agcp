@@ -549,22 +549,57 @@ impl AccountStore {
         }
     }
 
+    fn first_quota_eligible_account_id(&self, model: &str) -> Option<String> {
+        let global_threshold = self.quota_threshold;
+        self.accounts
+            .iter()
+            .find(|a| a.is_usable(model) && !a.is_quota_below_threshold(model, global_threshold))
+            .map(|a| a.id.clone())
+    }
+
     /// Sticky strategy: stay on current account until rate-limited
     fn select_sticky(&mut self, model: &str) -> Option<String> {
+        let global_threshold = self.quota_threshold;
+
         // Check if active account is usable
         if let Some(id) = &self.active_account_id
             && let Some(account) = self.accounts.iter().find(|a| &a.id == id)
         {
             if account.is_usable(model) {
+                // Keep sticky behavior only while the active account is above threshold.
+                if !account.is_quota_below_threshold(model, global_threshold) {
+                    return Some(id.clone());
+                }
+
+                // Active account is still usable but below threshold - prefer another eligible account.
+                if let Some(next_id) = self.first_quota_eligible_account_id(model) {
+                    self.active_account_id = Some(next_id.clone());
+                    return Some(next_id);
+                }
+
+                // If no better account exists, continue using active account.
                 return Some(id.clone());
             }
             // Check if rate limit is short (< 2 minutes) - wait instead of switch
             if account.rate_limit_remaining(model) < 120 {
+                if !account.is_quota_below_threshold(model, global_threshold) {
+                    return Some(id.clone());
+                }
+                if let Some(next_id) = self.first_quota_eligible_account_id(model) {
+                    self.active_account_id = Some(next_id.clone());
+                    return Some(next_id);
+                }
                 return Some(id.clone());
             }
         }
 
-        // Find first usable account
+        // Find first quota-eligible account.
+        if let Some(id) = self.first_quota_eligible_account_id(model) {
+            self.active_account_id = Some(id.clone());
+            return Some(id);
+        }
+
+        // No account above threshold - pick first usable account.
         for account in &self.accounts {
             if account.is_usable(model) {
                 self.active_account_id = Some(account.id.clone());
@@ -581,11 +616,22 @@ impl AccountStore {
 
     /// Round-robin strategy: rotate to next account
     fn select_round_robin(&mut self, model: &str) -> Option<String> {
-        let usable: Vec<_> = self
+        let global_threshold = self.quota_threshold;
+
+        let quota_eligible: Vec<_> = self
             .accounts
             .iter()
-            .filter(|a| a.is_usable(model))
+            .filter(|a| a.is_usable(model) && !a.is_quota_below_threshold(model, global_threshold))
             .collect();
+
+        let usable: Vec<_> = if quota_eligible.is_empty() {
+            self.accounts
+                .iter()
+                .filter(|a| a.is_usable(model))
+                .collect()
+        } else {
+            quota_eligible
+        };
 
         if usable.is_empty() {
             return self
@@ -595,14 +641,14 @@ impl AccountStore {
                 .map(|a| a.id.clone());
         }
 
-        // Find current index and rotate
-        let current_idx = self
+        // Find current index and rotate.
+        let next_idx = self
             .active_account_id
             .as_ref()
             .and_then(|id| usable.iter().position(|a| &a.id == id))
+            .map(|idx| (idx + 1) % usable.len())
             .unwrap_or(0);
 
-        let next_idx = (current_idx + 1) % usable.len();
         let selected = usable[next_idx].id.clone();
         self.active_account_id = Some(selected.clone());
         Some(selected)
@@ -739,6 +785,98 @@ mod tests {
                 .email,
             "a2@example.com"
         );
+    }
+
+    #[test]
+    fn test_sticky_selection_respects_quota_threshold() {
+        let mut store = AccountStore::default();
+        store.strategy = SelectionStrategy::Sticky;
+        store.quota_threshold = 0.2;
+
+        let mut low = Account::new("low@example.com".to_string(), "token-low".to_string());
+        low.quota.insert(
+            "gemini-3-flash".to_string(),
+            ModelQuota {
+                remaining_fraction: 0.05,
+                reset_time: 0,
+            },
+        );
+
+        let mut high = Account::new("high@example.com".to_string(), "token-high".to_string());
+        high.quota.insert(
+            "gemini-3-flash".to_string(),
+            ModelQuota {
+                remaining_fraction: 0.8,
+                reset_time: 0,
+            },
+        );
+
+        let low_id = low.id.clone();
+        let high_id = high.id.clone();
+        store.add_account(low);
+        store.add_account(high);
+        store.active_account_id = Some(low_id);
+
+        let selected = store.select_account("gemini-3-flash").unwrap();
+        assert_eq!(selected, high_id);
+    }
+
+    #[test]
+    fn test_round_robin_selection_respects_quota_threshold() {
+        let mut store = AccountStore::default();
+        store.strategy = SelectionStrategy::RoundRobin;
+        store.quota_threshold = 0.2;
+
+        let mut low = Account::new("low@example.com".to_string(), "token-low".to_string());
+        low.quota.insert(
+            "gemini-3-flash".to_string(),
+            ModelQuota {
+                remaining_fraction: 0.05,
+                reset_time: 0,
+            },
+        );
+
+        let mut high_a = Account::new("high-a@example.com".to_string(), "token-high-a".to_string());
+        high_a.quota.insert(
+            "gemini-3-flash".to_string(),
+            ModelQuota {
+                remaining_fraction: 0.7,
+                reset_time: 0,
+            },
+        );
+
+        let mut high_b = Account::new("high-b@example.com".to_string(), "token-high-b".to_string());
+        high_b.quota.insert(
+            "gemini-3-flash".to_string(),
+            ModelQuota {
+                remaining_fraction: 0.6,
+                reset_time: 0,
+            },
+        );
+
+        store.add_account(low);
+        store.add_account(high_a.clone());
+        store.add_account(high_b.clone());
+
+        // Seed active account to the low-quota account. Round-robin should pick an eligible account.
+        let low_id = store
+            .accounts
+            .iter()
+            .find(|a| a.email == "low@example.com")
+            .unwrap()
+            .id
+            .clone();
+        store.active_account_id = Some(low_id);
+
+        let selected = store.select_account("gemini-3-flash").unwrap();
+        let selected_email = store
+            .accounts
+            .iter()
+            .find(|a| a.id == selected)
+            .unwrap()
+            .email
+            .clone();
+        assert_ne!(selected_email, "low@example.com");
     }
 
     #[test]

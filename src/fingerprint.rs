@@ -12,7 +12,7 @@ use std::sync::LazyLock;
 // Used as the fallback when no local installation is detected
 // (Docker, headless servers, etc.).
 
-const KNOWN_STABLE_VERSION: &str = "1.16.5";
+pub const KNOWN_STABLE_VERSION: &str = "1.16.5";
 const KNOWN_STABLE_ELECTRON: &str = "39.2.3";
 const KNOWN_STABLE_CHROME: &str = "132.0.6834.160";
 
@@ -25,20 +25,12 @@ struct VersionConfig {
 }
 
 /// Try to detect the locally installed Antigravity version.
+///
+/// Strategy: file-based detection only (no subprocess invocation).
+/// This intentionally avoids launching `antigravity --version`, which can
+/// spawn Electron/Chromium helper processes and block startup.
 fn detect_local_version() -> Option<String> {
-    // Try `antigravity --version` (works on all platforms)
-    if let Ok(output) = std::process::Command::new("antigravity")
-        .arg("--version")
-        .output()
-        && output.status.success()
-    {
-        let raw = String::from_utf8_lossy(&output.stdout);
-        if let Some(ver) = extract_semver(raw.trim()) {
-            return Some(ver);
-        }
-    }
-
-    // Linux: check common install paths for package.json
+    // Linux: check common install paths for package.json (no subprocess needed)
     #[cfg(target_os = "linux")]
     {
         for base in &[
@@ -61,9 +53,7 @@ fn detect_local_version() -> Option<String> {
     {
         let plist = std::path::Path::new("/Applications/Antigravity.app/Contents/Info.plist");
         if let Ok(content) = std::fs::read_to_string(plist) {
-            // Simple regex-free extraction: find CFBundleShortVersionString value
             if let Some(pos) = content.find("CFBundleShortVersionString") {
-                // The value <string>X.Y.Z</string> follows after the key
                 let after = &content[pos..];
                 if let Some(s) = after.find("<string>") {
                     let rest = &after[s + 8..];
@@ -101,6 +91,7 @@ fn detect_local_version() -> Option<String> {
 }
 
 /// Extract the first `X.Y.Z` semver triple from an arbitrary string.
+#[cfg(any(test, target_os = "macos"))]
 fn extract_semver(raw: &str) -> Option<String> {
     for token in raw.split(|c: char| c.is_whitespace() || c == ',' || c == ';') {
         let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == '(' || c == ')');
@@ -239,7 +230,7 @@ pub static SESSION_ID: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().
 /// Electron client across User-Agent, client identity, device identity,
 /// and runtime environment layers.
 pub fn build_fingerprint_headers() -> Vec<(Cow<'static, str>, Cow<'static, str>)> {
-    let mut headers = Vec::with_capacity(7);
+    let mut headers = Vec::with_capacity(8);
 
     // 1. User-Agent (Electron-style)
     headers.push((Cow::Borrowed("User-Agent"), Cow::Owned(USER_AGENT.clone())));
@@ -268,7 +259,42 @@ pub fn build_fingerprint_headers() -> Vec<(Cow<'static, str>, Cow<'static, str>)
         Cow::Borrowed("gl-node/18.18.2 fire/0.8.6 grpc/1.10.x"),
     ));
 
+    // 6. Per-request trace ID (unique per upstream call)
+    headers.push((
+        Cow::Borrowed("X-Request-Id"),
+        Cow::Owned(uuid::Uuid::new_v4().to_string()),
+    ));
+
     headers
+}
+
+// ── Diagnostic helpers (for `agcp doctor`) ──────────────────────────────
+
+/// Returns a human-readable description of how the version was resolved.
+pub fn version_source() -> &'static str {
+    // Compare already-resolved version against fallback to determine source
+    // (avoids re-running detect_local_version which would launch the GUI)
+    if *VERSION == KNOWN_STABLE_VERSION {
+        "known stable fallback"
+    } else {
+        "local installation"
+    }
+}
+
+/// Returns a human-readable description of how the machine ID was resolved.
+pub fn machine_id_source() -> &'static str {
+    if let Some(config_dir) = dirs::config_dir() {
+        let antigravity_mid = config_dir.join("Antigravity").join("machineid");
+        if antigravity_mid.exists() {
+            return "Antigravity app (~/.config/Antigravity/machineid)";
+        }
+    }
+    let agcp_mid = crate::config::Config::dir().join("machineid");
+    if agcp_mid.exists() {
+        "AGCP persisted (~/.config/agcp/machineid)"
+    } else {
+        "generated (new UUID)"
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────

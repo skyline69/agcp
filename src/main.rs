@@ -29,9 +29,10 @@ use tracing_subscriber::EnvFilter;
 use auth::accounts::AccountStore;
 use auth::{Account, HttpClient};
 use cache::ResponseCache;
-use cloudcode::CloudCodeClient;
+use cloudcode::{CloudCodeClient, build_request, fetch_model_quotas};
 use colors::*;
 use config::Config;
+use format::MessagesRequest;
 use server::ServerState;
 
 /// A simple animated spinner for terminal feedback
@@ -228,6 +229,10 @@ async fn main() {
             }
             "upgrade" => {
                 run_upgrade_command().await;
+                return;
+            }
+            "update" => {
+                run_update_command().await;
                 return;
             }
             "tui" => {
@@ -699,6 +704,20 @@ async fn run_server(config: Config) {
         background_token_refresh(refresh_state).await;
     });
 
+    let maintenance_state = state.clone();
+    let warmup_enabled = config.accounts.warmup_on_startup;
+    let warmup_model = config.accounts.warmup_model.clone();
+    let quota_refresh_interval_secs = config.accounts.quota_refresh_interval_secs;
+    tokio::spawn(async move {
+        background_quota_maintenance(
+            maintenance_state,
+            warmup_enabled,
+            warmup_model,
+            quota_refresh_interval_secs,
+        )
+        .await;
+    });
+
     let addr: SocketAddr = format!("{}:{}", config.host(), config.port())
         .parse()
         .expect("Invalid address");
@@ -757,6 +776,267 @@ async fn background_token_refresh(state: Arc<ServerState>) {
         // Also refill rate limit tokens for all accounts
         for account in accounts.accounts.iter_mut() {
             account.refill_tokens(5); // Add 5 tokens every 5 minutes
+        }
+    }
+}
+
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+async fn get_account_credentials_by_id(
+    state: &Arc<ServerState>,
+    account_id: &str,
+) -> Result<(String, String, String), String> {
+    let (account_email, project_id, token_or_refresh) = {
+        let mut accounts = state.accounts.write().await;
+        let account = accounts
+            .get_account_mut(account_id)
+            .ok_or_else(|| format!("Account '{account_id}' not found"))?;
+
+        if !account.enabled || account.is_invalid {
+            return Err(format!("Account {} is disabled or invalid", account.email));
+        }
+
+        let email = account.email.clone();
+        let project_id = account.project_id.clone().unwrap_or_default();
+
+        if account.is_access_token_valid() {
+            let token = account.access_token.clone().ok_or_else(|| {
+                format!(
+                    "Account {} has no cached token despite being marked valid",
+                    account.email
+                )
+            })?;
+            (email, project_id, Ok(token))
+        } else {
+            (email, project_id, Err(account.refresh_token.clone()))
+        }
+    };
+
+    let access_token = match token_or_refresh {
+        Ok(token) => token,
+        Err(refresh_token) => {
+            let (new_token, expires_in) =
+                auth::token::refresh_access_token(&state.http_client, &refresh_token)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+            let mut accounts = state.accounts.write().await;
+            if let Some(account) = accounts.get_account_mut(account_id) {
+                account.access_token = Some(new_token.clone());
+                account.access_token_expires = Some(now_unix_secs() + expires_in);
+            }
+            new_token
+        }
+    };
+
+    Ok((access_token, project_id, account_email))
+}
+
+fn build_startup_warmup_request(model: &str) -> MessagesRequest {
+    MessagesRequest {
+        model: model.to_string(),
+        messages: vec![crate::format::anthropic::Message {
+            role: crate::format::anthropic::Role::User,
+            content: crate::format::anthropic::MessageContent::Text(
+                "Warmup ping: respond with the single token OK.".to_string(),
+            ),
+        }],
+        max_tokens: 8,
+        stream: false,
+        system: None,
+        tools: None,
+        temperature: Some(0.0),
+        top_p: None,
+        top_k: None,
+        stop_sequences: None,
+        tool_choice: None,
+        thinking: None,
+        response_format: None,
+        candidate_count: None,
+    }
+}
+
+async fn warmup_single_account(
+    state: &Arc<ServerState>,
+    account_id: &str,
+    model: &str,
+) -> Result<(), String> {
+    let (access_token, project_id, account_email) =
+        get_account_credentials_by_id(state, account_id).await?;
+
+    let warmup_request = build_startup_warmup_request(model);
+    let cc_request = build_request(&warmup_request, &project_id);
+    let request_body = hyper::body::Bytes::from(
+        serde_json::to_vec(&cc_request).map_err(|e| format!("Serialize warmup request: {e}"))?,
+    );
+
+    state
+        .cloudcode_client
+        .send_request(request_body, &access_token, model)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    info!(
+        model = %model,
+        account = %account_email,
+        "Startup warmup request succeeded"
+    );
+
+    Ok(())
+}
+
+async fn refresh_quotas_for_account(
+    state: &Arc<ServerState>,
+    account_id: &str,
+) -> Result<usize, String> {
+    let (access_token, project_id, account_email) =
+        get_account_credentials_by_id(state, account_id).await?;
+
+    let project_opt = if project_id.is_empty() {
+        None
+    } else {
+        Some(project_id.as_str())
+    };
+
+    let quotas = fetch_model_quotas(&state.http_client, &access_token, project_opt).await?;
+    let refreshed_models = quotas.len();
+
+    {
+        let mut accounts = state.accounts.write().await;
+        let account = accounts
+            .get_account_mut(account_id)
+            .ok_or_else(|| format!("Account '{account_id}' not found while saving quotas"))?;
+
+        for quota in &quotas {
+            let reset_time = quota
+                .reset_time
+                .as_ref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.timestamp() as u64)
+                .unwrap_or(0);
+
+            account.quota.insert(
+                quota.model_id.clone(),
+                auth::accounts::ModelQuota {
+                    remaining_fraction: quota.remaining_fraction,
+                    reset_time,
+                },
+            );
+        }
+    }
+
+    info!(
+        account = %account_email,
+        models = refreshed_models,
+        "Refreshed account quota data"
+    );
+
+    Ok(refreshed_models)
+}
+
+async fn refresh_all_enabled_account_quotas(state: &Arc<ServerState>) -> (usize, usize) {
+    let account_ids: Vec<String> = {
+        let accounts = state.accounts.read().await;
+        accounts
+            .accounts
+            .iter()
+            .filter(|a| a.enabled && !a.is_invalid)
+            .map(|a| a.id.clone())
+            .collect()
+    };
+
+    let mut refreshed_accounts = 0usize;
+    let mut refreshed_models = 0usize;
+
+    for account_id in account_ids {
+        match refresh_quotas_for_account(state, &account_id).await {
+            Ok(model_count) => {
+                refreshed_accounts += 1;
+                refreshed_models += model_count;
+            }
+            Err(e) => {
+                warn!(account_id = %account_id, error = %e, "Failed to refresh account quotas");
+            }
+        }
+    }
+
+    if refreshed_accounts > 0 {
+        let accounts = state.accounts.read().await;
+        if let Err(e) = accounts.save() {
+            warn!(error = %e, "Failed to persist refreshed quota data");
+        }
+    }
+
+    (refreshed_accounts, refreshed_models)
+}
+
+async fn background_quota_maintenance(
+    state: Arc<ServerState>,
+    warmup_on_startup: bool,
+    warmup_model: String,
+    quota_refresh_interval_secs: u64,
+) {
+    if warmup_on_startup {
+        // Allow server startup to settle before performing warmup network calls.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let selected_account = {
+            let mut accounts = state.accounts.write().await;
+            accounts.select_account(&warmup_model)
+        };
+
+        if let Some(account_id) = selected_account {
+            if let Err(e) = warmup_single_account(&state, &account_id, &warmup_model).await {
+                warn!(error = %e, model = %warmup_model, "Startup warmup failed");
+            }
+        } else {
+            warn!(
+                model = %warmup_model,
+                "Startup warmup skipped: no enabled accounts available"
+            );
+        }
+    }
+
+    let (startup_accounts, startup_models) = refresh_all_enabled_account_quotas(&state).await;
+    if startup_accounts > 0 {
+        info!(
+            accounts = startup_accounts,
+            models = startup_models,
+            "Startup quota refresh completed"
+        );
+    }
+
+    if quota_refresh_interval_secs == 0 {
+        info!("Periodic quota refresh disabled (accounts.quota_refresh_interval_secs = 0)");
+        return;
+    }
+
+    let interval_secs = quota_refresh_interval_secs.max(60);
+    if interval_secs != quota_refresh_interval_secs {
+        warn!(
+            configured = quota_refresh_interval_secs,
+            effective = interval_secs,
+            "Quota refresh interval too low; clamped to 60 seconds"
+        );
+    }
+
+    let interval = std::time::Duration::from_secs(interval_secs);
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let (accounts_refreshed, models_refreshed) =
+            refresh_all_enabled_account_quotas(&state).await;
+        if accounts_refreshed > 0 {
+            info!(
+                accounts = accounts_refreshed,
+                models = models_refreshed,
+                "Periodic quota refresh completed"
+            );
         }
     }
 }
@@ -893,6 +1173,14 @@ fn run_config_command() {
     println!("  {}[server]{}", DIM, RESET);
     println!("    port = {}{}{}", CYAN, config.server.port, RESET);
     println!("    host = {}\"{}\"{}", CYAN, config.server.host, RESET);
+    println!(
+        "    warmup_intercept_enabled = {}{}{}",
+        CYAN, config.server.warmup_intercept_enabled, RESET
+    );
+    println!(
+        "    warmup_intercept_max_text_len = {}{}{}",
+        CYAN, config.server.warmup_intercept_max_text_len, RESET
+    );
     if config.server.api_key.is_some() {
         println!(
             "    api_key = {}\"****\"{} {}(set){}",
@@ -921,6 +1209,18 @@ fn run_config_command() {
     println!(
         "    fallback = {}{}{}",
         CYAN, config.accounts.fallback, RESET
+    );
+    println!(
+        "    warmup_on_startup = {}{}{}",
+        CYAN, config.accounts.warmup_on_startup, RESET
+    );
+    println!(
+        "    warmup_model = {}\"{}\"{}",
+        CYAN, config.accounts.warmup_model, RESET
+    );
+    println!(
+        "    quota_refresh_interval_secs = {}{}{}",
+        CYAN, config.accounts.quota_refresh_interval_secs, RESET
     );
     println!();
 
@@ -1465,6 +1765,7 @@ fn print_help() {
 │ {YELLOW}restart{RESET}     │ Restart the background server          │
 │ {YELLOW}status{RESET}      │ Check if server is running             │
 │ {YELLOW}upgrade{RESET}     │ Check for and install updates          │
+│ {YELLOW}update{RESET}      │ Check latest Antigravity app version   │
 │ {YELLOW}completions{RESET} │ Generate shell completions             │
 │ {YELLOW}tui{RESET}         │ Launch interactive terminal UI         │
 │ {YELLOW}version{RESET}     │ Show version information               │
@@ -1934,6 +2235,96 @@ fn compare_versions(a: &str, b: &str) -> bool {
     false
 }
 
+async fn run_update_command() {
+    use crate::fingerprint::KNOWN_STABLE_VERSION;
+
+    println!();
+    println!("{}{}Antigravity Version Check{}", BOLD, CYAN, RESET);
+    println!(
+        "{}Checking latest Antigravity desktop app version...{}",
+        DIM, RESET
+    );
+    println!();
+
+    let current = &*crate::fingerprint::VERSION;
+    println!("  {}Current fingerprint:{} {}", DIM, RESET, current);
+
+    // Fetch from Google's auto-updater endpoint (same one ACP uses)
+    let url = "https://antigravity-auto-updater-974169037036.us-central1.run.app";
+    let client = auth::HttpClient::new();
+    let headers = [("User-Agent", &*crate::fingerprint::USER_AGENT as &str)];
+
+    let spinner = Spinner::new("Fetching latest version...");
+    let result = client.get(url, &headers).await;
+    spinner.stop();
+
+    match result {
+        Ok(body) => {
+            let text = String::from_utf8_lossy(&body);
+            // Extract semver from response (format: "... Stable Version: X.Y.Z-hash ...")
+            let latest = text
+                .split(|c: char| c.is_whitespace() || c == '-')
+                .find_map(|token| {
+                    let parts: Vec<&str> = token.split('.').collect();
+                    if parts.len() == 3
+                        && parts
+                            .iter()
+                            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                    {
+                        Some(token.to_string())
+                    } else {
+                        None
+                    }
+                });
+
+            if let Some(latest) = latest {
+                println!("  {}Latest available:{} {}", DIM, RESET, latest);
+                println!();
+
+                if current == &latest {
+                    println!("{}✓ Fingerprint version is up to date!{}", GREEN, RESET);
+                } else if compare_versions(&latest, current) {
+                    println!(
+                        "{}! Newer Antigravity version available:{} {} → {}",
+                        YELLOW, RESET, current, latest
+                    );
+                    if current == KNOWN_STABLE_VERSION {
+                        println!();
+                        println!(
+                            "  {}To update, change KNOWN_STABLE_VERSION in src/fingerprint.rs to \"{}\"{}",
+                            DIM, latest, RESET
+                        );
+                    }
+                } else {
+                    println!(
+                        "{}✓ Fingerprint version is current or newer.{}",
+                        GREEN, RESET
+                    );
+                }
+            } else {
+                println!(
+                    "{}! Could not parse version from update server response{}",
+                    YELLOW, RESET
+                );
+                println!(
+                    "  {}Raw response: {}{}",
+                    DIM,
+                    text.chars().take(200).collect::<String>(),
+                    RESET
+                );
+            }
+        }
+        Err(e) => {
+            println!("{}✗ Failed to check latest version:{} {}", RED, RESET, e);
+            println!(
+                "  {}The auto-updater endpoint may be temporarily unavailable.{}",
+                DIM, RESET
+            );
+        }
+    }
+    println!();
+}
+
 async fn run_test_command() {
     println!();
     println!("{}{}Testing AGCP...{}", BOLD, CYAN, RESET);
@@ -2170,6 +2561,37 @@ async fn run_doctor_command() {
     } else {
         println!("{}○{} Server not running", DIM, RESET);
     }
+
+    // Check 7: Fingerprint health
+    println!("{}{}Fingerprint{}", BOLD, CYAN, RESET);
+    println!(
+        "  {}Version:{} {} ({})",
+        DIM,
+        RESET,
+        *crate::fingerprint::VERSION,
+        crate::fingerprint::version_source()
+    );
+    if let Some(ref mid) = *crate::fingerprint::MACHINE_ID {
+        println!(
+            "  {}Machine ID:{} {} ({})",
+            DIM,
+            RESET,
+            mid,
+            crate::fingerprint::machine_id_source()
+        );
+    } else {
+        println!("{}!{} Machine ID: not available", YELLOW, RESET);
+    }
+    println!(
+        "  {}Session ID:{} {}",
+        DIM,
+        RESET,
+        *crate::fingerprint::SESSION_ID
+    );
+    // Truncate UA for readability
+    let ua = &*crate::fingerprint::USER_AGENT;
+    let ua_display = if ua.len() > 80 { &ua[..80] } else { ua };
+    println!("  {}User-Agent:{} {}…", DIM, RESET, ua_display);
 
     println!();
     if all_ok {
@@ -2792,7 +3214,7 @@ fn print_completions(shell: &str) {
     COMPREPLY=()
     cur="${{COMP_WORDS[COMP_CWORD]}}"
     prev="${{COMP_WORDS[COMP_CWORD-1]}}"
-    commands="login setup accounts config doctor test quota stats logs stop restart status upgrade tui version help completions"
+    commands="login setup accounts config doctor test quota stats logs stop restart status upgrade update tui version help completions"
 
     case "${{prev}}" in
         agcp)
@@ -2845,6 +3267,7 @@ _agcp() {{
         'restart:Restart the background server'
         'status:Check if server is running'
         'upgrade:Check for and install updates'
+        'update:Check latest Antigravity app version'
         'tui:Launch interactive terminal UI'
         'version:Show version information'
         'help:Show help message'
@@ -2917,6 +3340,7 @@ complete -c agcp -n "__fish_use_subcommand" -a stop -d "Stop the background serv
 complete -c agcp -n "__fish_use_subcommand" -a restart -d "Restart the background server"
 complete -c agcp -n "__fish_use_subcommand" -a status -d "Check if server is running"
 complete -c agcp -n "__fish_use_subcommand" -a upgrade -d "Check for and install updates"
+complete -c agcp -n "__fish_use_subcommand" -a update -d "Check latest Antigravity app version"
 complete -c agcp -n "__fish_use_subcommand" -a tui -d "Launch interactive terminal UI"
 complete -c agcp -n "__fish_use_subcommand" -a version -d "Show version information"
 complete -c agcp -n "__fish_use_subcommand" -a help -d "Show help message"

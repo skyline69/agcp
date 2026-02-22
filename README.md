@@ -40,6 +40,11 @@ A blazing-fast Rust proxy that translates Anthropic's Claude API to Google's Clo
 - **Multiple Models** - Access Claude (Opus, Sonnet) and Gemini (Flash, Pro) through a single endpoint
 - **Multi-Account Support** - Rotate between multiple Google accounts with smart load balancing
 - **Response Caching** - Cache non-streaming responses to reduce quota usage
+- **Native Gemini Routes** - `/v1beta/models`, `:generateContent`, `:streamGenerateContent`, `:countTokens`
+- **OpenAI Media Endpoints** - `/v1/images/generations`, `/v1/images/edits`, `/v1/images/variations`, `/v1/audio/transcriptions`
+- **Warmup Interception** - Detects Claude Code warmup pings on Anthropic endpoints and answers locally (`X-Warmup-Intercepted: true`)
+- **Model Detect API** - `POST /v1/models/detect` returns mapped model and capability hints for CLI/TUI integrations
+- **Startup Warmup + Quota Refresh** - Optional warmup and periodic quota sync for smarter account selection
 - **Interactive TUI** - Beautiful terminal UI for monitoring and configuration
 - **Background Daemon** - Runs quietly in the background
 - **Client Identity Camouflage** - Spoofs the full Electron client fingerprint (User-Agent, `X-Client-Name/Version`, `X-Machine-Id`, `X-VSCode-SessionId`) to match the official Antigravity desktop app
@@ -233,6 +238,8 @@ port = 8080
 host = "127.0.0.1"
 # api_key = "your-optional-api-key"
 request_timeout_secs = 300       # Per-request timeout (default: 5 minutes)
+warmup_intercept_enabled = true  # Intercept warmup pings on /v1/messages
+warmup_intercept_max_text_len = 100
 
 [logging]
 debug = false
@@ -242,6 +249,9 @@ log_requests = false
 strategy = "hybrid"      # "sticky", "roundrobin", or "hybrid"
 quota_threshold = 0.1    # Deprioritize accounts below 10% quota
 fallback = false
+warmup_on_startup = true
+warmup_model = "gemini-3-flash"
+quota_refresh_interval_secs = 900  # 0 = disabled
 
 [cache]
 enabled = true
@@ -284,9 +294,61 @@ agcp accounts remove <id>     # Remove an account
 | Endpoint | Description |
 |----------|-------------|
 | `POST /v1/messages` | Anthropic Messages API (streaming and non-streaming) |
+| `POST /v1/chat/completions` | OpenAI Chat Completions compatibility |
+| `POST /v1/responses` | OpenAI Responses compatibility |
+| `POST /v1/images/generations` | OpenAI image generation compatibility |
+| `POST /v1/images/edits` | OpenAI image edit compatibility (multipart) |
+| `POST /v1/images/variations` | OpenAI image variation compatibility (multipart) |
+| `POST /v1/audio/transcriptions` | OpenAI audio transcription compatibility |
+| `POST /v1/models/detect` | Detect mapped model and capability hints |
+| `GET /v1beta/models` | Native Gemini model listing |
+| `GET /v1beta/models/{model}` | Native Gemini model metadata |
+| `POST /v1beta/models/{model}:countTokens` | Native Gemini token counting |
+| `POST /v1beta/models/{model}:generateContent` | Native Gemini non-streaming generation |
+| `POST /v1beta/models/{model}:streamGenerateContent` | Native Gemini streaming generation (SSE) |
+| `POST /internal/warmup` | Trigger internal warmup and optional quota refresh |
 | `GET /v1/models` | List available models |
 | `GET /health` | Health check |
 | `GET /stats` | Server and cache statistics |
+
+### Gemini / Media API Examples
+
+```bash
+# Native Gemini: list models
+curl -s http://127.0.0.1:8080/v1beta/models | jq
+
+# Native Gemini: count tokens
+curl -s http://127.0.0.1:8080/v1beta/models/gemini-3-flash:countTokens \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"role":"user","parts":[{"text":"Hello"}]}]}'
+
+# OpenAI Images compatibility
+curl -s http://127.0.0.1:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"a retro robot poster","response_format":"b64_json"}'
+
+# OpenAI image edits compatibility
+curl -s http://127.0.0.1:8080/v1/images/edits \
+  -F "image=@input.png" \
+  -F "prompt=add cinematic lighting" \
+  -F "response_format=b64_json"
+
+# OpenAI image variations compatibility
+curl -s http://127.0.0.1:8080/v1/images/variations \
+  -F "image=@input.png" \
+  -F "response_format=url"
+
+# OpenAI Audio compatibility (multipart)
+curl -s http://127.0.0.1:8080/v1/audio/transcriptions \
+  -F "file=@sample.wav" \
+  -F "model=gemini-3-flash" \
+  -F "response_format=json"
+
+# Model detect helper
+curl -s http://127.0.0.1:8080/v1/models/detect \
+  -H "Content-Type: application/json" \
+  -d '{"model":"flash"}'
+```
 
 ## Response Caching
 
