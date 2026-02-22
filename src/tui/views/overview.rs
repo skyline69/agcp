@@ -2,7 +2,7 @@ use ratatui::prelude::*;
 use ratatui::symbols::Marker;
 use ratatui::widgets::{Axis, Block, BorderType, Borders, Chart, Dataset, GraphType, Paragraph};
 
-use crate::tui::app::App;
+use crate::tui::app::{App, SelectionSource};
 use crate::tui::theme;
 use crate::tui::widgets::{AccountPanel, StatsPanel, StatusPanel};
 
@@ -261,8 +261,10 @@ fn render_recent_activity(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Store area for mouse scroll detection
     app.activity_area = area;
+    app.activity_text_area = inner;
 
     if app.logs.is_empty() {
+        app.activity_visible_lines.clear();
         let msg = Paragraph::new("No activity yet").style(theme::dim());
         frame.render_widget(msg, inner);
         return;
@@ -278,14 +280,33 @@ fn render_recent_activity(frame: &mut Frame, area: Rect, app: &mut App) {
         .saturating_sub(visible)
         .saturating_sub(app.activity_scroll);
 
-    let lines: Vec<Line> = app
-        .logs
+    let visible_entries: Vec<&crate::tui::data::LogEntry> =
+        app.logs.iter().skip(scroll_offset).take(visible).collect();
+
+    app.activity_visible_lines = visible_entries
         .iter()
-        .skip(scroll_offset)
-        .take(visible)
+        .map(|entry| entry.line.clone())
+        .collect();
+
+    let selection = app.active_selection_for_source(
+        SelectionSource::OverviewActivity,
+        inner,
+        app.activity_visible_lines.len(),
+    );
+
+    let lines: Vec<Line> = visible_entries
+        .iter()
+        .enumerate()
         .map(|entry| {
-            // Use syntax highlighting from logs module
-            super::logs::highlight_log_line(&entry.line, entry.level)
+            let (row, entry) = entry;
+            let line = super::logs::highlight_log_line(&entry.line, entry.level);
+            if let Some(bounds) = selection
+                && let Some((start_char, end_char_exclusive)) =
+                    super::logs::selection_cols_for_row(bounds, row, &entry.line)
+            {
+                return super::logs::apply_selection_to_line(line, start_char, end_char_exclusive);
+            }
+            line
         })
         .collect();
 

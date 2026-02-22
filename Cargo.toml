@@ -80,6 +80,9 @@ dialoguer = "0.12"
 # Platform directories
 dirs = "6"
 
+# Clipboard support
+arboard = "3.6"
+
 # Regex (lightweight)
 regex-lite = "0.1"
 

@@ -1,8 +1,12 @@
 use std::collections::{HashMap, VecDeque};
-use std::io;
+use std::io::{self, Read, Write};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
+use arboard::Clipboard;
+use base64::Engine;
 use crossterm::ExecutableCommand;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
@@ -31,6 +35,14 @@ const GEMINI_DISABLED_MARKER_MAPPED: &str = "gemini has been disabled in this go
 const SERVER_LISTENING_MARKER: &str = "server listening";
 /// Popup message shown when Gemini access is disabled on the account.
 const GEMINI_DISABLED_WARNING_MESSAGE: &str = "Google has disabled Gemini access for this account due to a Terms of Service violation. Requests will continue to fail until access is restored. Contact Google Cloud Support or email gemini-code-assist-user-feedback@google.com.";
+/// Duration to keep the copy toast visible.
+const COPY_TOAST_TTL: Duration = Duration::from_secs(2);
+/// Prevent extremely large OSC52 payloads from flooding terminals.
+const OSC52_MAX_BYTES: usize = 100_000;
+/// Briefly wait for clipboard command to fail fast; otherwise detach and continue.
+const CLIP_CMD_QUICK_WAIT: Duration = Duration::from_millis(120);
+/// Poll interval while waiting for quick clipboard command completion.
+const CLIP_CMD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Linearly interpolate between two u64 values.
 fn lerp_u64(from: u64, to: u64, t: f64) -> u64 {
@@ -67,6 +79,339 @@ fn detect_startup_runtime_warning_message(
         return None;
     }
     detect_runtime_warning_message(entries)
+}
+
+/// Source view for text selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionSource {
+    Logs,
+    OverviewActivity,
+}
+
+/// Active drag-selection state in absolute terminal coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextSelection {
+    pub source: SelectionSource,
+    pub anchor_col: u16,
+    pub anchor_row: u16,
+    pub focus_col: u16,
+    pub focus_row: u16,
+}
+
+/// Normalized selection bounds in local (area-relative) coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalSelection {
+    pub start_row: usize,
+    pub start_col: usize,
+    pub end_row: usize,
+    pub end_col_exclusive: usize,
+}
+
+/// Normalize two absolute selection points into top-left -> bottom-right order.
+fn normalize_selection_points(
+    a_col: u16,
+    a_row: u16,
+    b_col: u16,
+    b_row: u16,
+) -> ((u16, u16), (u16, u16)) {
+    let a = (a_row, a_col);
+    let b = (b_row, b_col);
+    if a <= b {
+        ((a_col, a_row), (b_col, b_row))
+    } else {
+        ((b_col, b_row), (a_col, a_row))
+    }
+}
+
+fn clamp_point_to_area(col: u16, row: u16, area: Rect) -> (u16, u16) {
+    if area.width == 0 || area.height == 0 {
+        return (area.x, area.y);
+    }
+
+    let max_x = area.x + area.width.saturating_sub(1);
+    let max_y = area.y + area.height.saturating_sub(1);
+
+    (col.clamp(area.x, max_x), row.clamp(area.y, max_y))
+}
+
+/// Convert an absolute selection into local bounds for a specific source/area.
+fn local_selection_for(
+    selection: &TextSelection,
+    source: SelectionSource,
+    area: Rect,
+    line_count: usize,
+) -> Option<LocalSelection> {
+    if selection.source != source || area.width == 0 || area.height == 0 || line_count == 0 {
+        return None;
+    }
+
+    let (anchor_col, anchor_row) =
+        clamp_point_to_area(selection.anchor_col, selection.anchor_row, area);
+    let (focus_col, focus_row) =
+        clamp_point_to_area(selection.focus_col, selection.focus_row, area);
+    let ((start_col_abs, start_row_abs), (end_col_abs, end_row_abs)) =
+        normalize_selection_points(anchor_col, anchor_row, focus_col, focus_row);
+
+    let max_row = line_count.saturating_sub(1);
+    let start_row = (start_row_abs.saturating_sub(area.y) as usize).min(max_row);
+    let end_row = (end_row_abs.saturating_sub(area.y) as usize).min(max_row);
+    let start_col = start_col_abs.saturating_sub(area.x) as usize;
+    let end_col_exclusive = end_col_abs.saturating_sub(area.x) as usize + 1;
+
+    Some(LocalSelection {
+        start_row,
+        start_col,
+        end_row,
+        end_col_exclusive,
+    })
+}
+
+fn char_to_byte_idx(s: &str, char_pos: usize) -> usize {
+    if char_pos == 0 {
+        return 0;
+    }
+    s.char_indices()
+        .nth(char_pos)
+        .map(|(idx, _)| idx)
+        .unwrap_or(s.len())
+}
+
+/// Extract selected text from visible lines for a source view.
+fn extract_selected_text(
+    lines: &[String],
+    area: Rect,
+    source: SelectionSource,
+    selection: &TextSelection,
+) -> String {
+    let Some(local) = local_selection_for(selection, source, area, lines.len()) else {
+        return String::new();
+    };
+
+    let mut out: Vec<String> = Vec::new();
+
+    for row_idx in local.start_row..=local.end_row {
+        let Some(line) = lines.get(row_idx) else {
+            continue;
+        };
+
+        let line_len_chars = line.chars().count();
+        let start_char = if row_idx == local.start_row {
+            local.start_col.min(line_len_chars)
+        } else {
+            0
+        };
+        let end_char_exclusive = if row_idx == local.end_row {
+            local.end_col_exclusive.min(line_len_chars)
+        } else {
+            line_len_chars
+        };
+
+        if start_char >= end_char_exclusive {
+            out.push(String::new());
+            continue;
+        }
+
+        let start_byte = char_to_byte_idx(line, start_char);
+        let end_byte = char_to_byte_idx(line, end_char_exclusive);
+        out.push(line[start_byte..end_byte].to_string());
+    }
+
+    out.join("\n")
+}
+
+fn copy_to_clipboard(text: &str) -> Result<&'static str, String> {
+    let mut errors = Vec::new();
+
+    #[cfg(target_os = "linux")]
+    {
+        match copy_with_system_command(text) {
+            Ok(backend) => return Ok(backend),
+            Err(err) => errors.push(err),
+        }
+
+        match copy_with_arboard(text) {
+            Ok(backend) => return Ok(backend),
+            Err(err) => errors.push(err),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        match copy_with_arboard(text) {
+            Ok(backend) => return Ok(backend),
+            Err(err) => errors.push(err),
+        }
+
+        match copy_with_system_command(text) {
+            Ok(backend) => return Ok(backend),
+            Err(err) => errors.push(err),
+        }
+    }
+
+    match copy_with_osc52(text) {
+        Ok(backend) => return Ok(backend),
+        Err(err) => errors.push(err),
+    }
+
+    Err(format!(
+        "no clipboard backend worked ({})",
+        errors.join(" | ")
+    ))
+}
+
+fn copy_with_arboard(text: &str) -> Result<&'static str, String> {
+    let mut clipboard = Clipboard::new().map_err(|e| format!("arboard init: {e}"))?;
+    clipboard
+        .set_text(text.to_string())
+        .map_err(|e| format!("arboard set_text: {e}"))?;
+
+    #[cfg(target_os = "linux")]
+    {
+        // Some Linux sessions report successful writes but don't update CLIPBOARD.
+        // Verify by reading back immediately; fall through to command backends if mismatch.
+        let roundtrip = clipboard
+            .get_text()
+            .map_err(|e| format!("arboard verify get_text: {e}"))?;
+        if roundtrip != text {
+            return Err("arboard verify mismatch after set_text".to_string());
+        }
+    }
+
+    Ok("arboard")
+}
+
+#[cfg(target_os = "linux")]
+fn copy_with_system_command(text: &str) -> Result<&'static str, String> {
+    let mut errors = Vec::new();
+
+    for (program, args) in [
+        ("wl-copy", vec!["--type", "text/plain"]),
+        ("xclip", vec!["-selection", "clipboard"]),
+        ("xsel", vec!["--clipboard", "--input"]),
+    ] {
+        match run_clip_command(program, &args, text) {
+            Ok(()) => return Ok(program),
+            Err(err) => errors.push(err),
+        }
+    }
+
+    Err(format!(
+        "linux clipboard commands failed: {}",
+        errors.join(" | ")
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn copy_with_system_command(text: &str) -> Result<&'static str, String> {
+    run_clip_command("pbcopy", &[], text).map(|_| "pbcopy")
+}
+
+#[cfg(target_os = "windows")]
+fn copy_with_system_command(text: &str) -> Result<&'static str, String> {
+    let mut errors = Vec::new();
+
+    for (program, args) in [
+        (
+            "powershell",
+            vec![
+                "-NoProfile",
+                "-Command",
+                "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+            ],
+        ),
+        ("clip", vec![]),
+    ] {
+        match run_clip_command(program, &args, text) {
+            Ok(()) => return Ok(program),
+            Err(err) => errors.push(err),
+        }
+    }
+
+    Err(format!(
+        "windows clipboard commands failed: {}",
+        errors.join(" | ")
+    ))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn copy_with_system_command(_text: &str) -> Result<&'static str, String> {
+    Err("no system clipboard command for this OS".to_string())
+}
+
+fn run_clip_command(program: &str, args: &[&str], text: &str) -> Result<(), String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{program} spawn failed: {e}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("{program} stdin write failed: {e}"))?;
+    }
+
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return Ok(());
+                }
+
+                let mut stderr = String::new();
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_string(&mut stderr);
+                }
+                let stderr = stderr.trim();
+                if stderr.is_empty() {
+                    return Err(format!("{program} exited with status {status}"));
+                }
+                return Err(format!("{program} exited with status {status}: {stderr}"));
+            }
+            Ok(None) => {
+                if start.elapsed() >= CLIP_CMD_QUICK_WAIT {
+                    // Some clipboard tools intentionally keep running to own selection data.
+                    // Reap in background and return immediately to keep TUI responsive.
+                    thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                    return Ok(());
+                }
+                thread::sleep(CLIP_CMD_POLL_INTERVAL);
+            }
+            Err(e) => return Err(format!("{program} wait failed: {e}")),
+        }
+    }
+}
+
+fn copy_with_osc52(text: &str) -> Result<&'static str, String> {
+    // OSC52 support is terminal-dependent and not verifiable from the process.
+    // Keep it opt-in to avoid false "copied" success signals.
+    if std::env::var("AGCP_ENABLE_OSC52").ok().as_deref() != Some("1") {
+        return Err("OSC52 fallback disabled (set AGCP_ENABLE_OSC52=1 to enable)".to_string());
+    }
+
+    if text.is_empty() {
+        return Ok("OSC52");
+    }
+    if text.len() > OSC52_MAX_BYTES {
+        return Err(format!("OSC52 text too large (>{} bytes)", OSC52_MAX_BYTES));
+    }
+
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let sequence = format!("\x1b]52;c;{}\x07", encoded);
+    let mut stdout = io::stdout();
+    stdout
+        .write_all(sequence.as_bytes())
+        .map_err(|e| format!("OSC52 write failed: {e}"))?;
+    stdout
+        .flush()
+        .map_err(|e| format!("OSC52 flush failed: {e}"))?;
+
+    Ok("OSC52")
 }
 
 /// Available tabs in the TUI
@@ -240,6 +585,10 @@ pub struct App {
     pub tab_areas: Vec<Rect>,
     /// Cached logs area for scroll detection
     pub logs_area: Rect,
+    /// Cached text-only logs area (excludes toolbar and scrollbar) for selection.
+    pub logs_text_area: Rect,
+    /// Visible plain-text log lines in logs tab (for drag-copy).
+    pub logs_visible_lines: Vec<String>,
     /// Cached scrollbar area for drag detection
     pub scrollbar_area: Rect,
     /// Cached accounts area for click detection
@@ -271,6 +620,10 @@ pub struct App {
     pub activity_auto_scroll: bool,
     /// Cached recent activity area for scroll detection
     pub activity_area: Rect,
+    /// Cached text-only recent activity area for selection.
+    pub activity_text_area: Rect,
+    /// Visible plain-text activity lines (for drag-copy).
+    pub activity_visible_lines: Vec<String>,
     /// Cached config area for click detection
     pub config_area: Rect,
     // Config editor state
@@ -371,6 +724,14 @@ pub struct App {
     pub hovered_log_dropdown_item: Option<usize>,
     /// Cached search bar area for click detection
     pub log_search_area: Rect,
+    /// Current mouse drag selection (if any).
+    pub text_selection: Option<TextSelection>,
+    /// Whether a drag selection is currently active.
+    pub selecting_text: bool,
+    /// Whether selection coordinates changed after drag start.
+    selection_moved: bool,
+    /// Non-blocking copy toast: (message, is_error, shown_at).
+    pub copy_toast: Option<(String, bool, Instant)>,
     // Mappings tab state
     /// Current mapping preset name
     pub mapping_preset: crate::models::MappingPreset,
@@ -442,6 +803,8 @@ impl App {
             last_log_refresh: Instant::now() - Duration::from_secs(1),
             tab_areas: Vec::new(),
             logs_area: Rect::default(),
+            logs_text_area: Rect::default(),
+            logs_visible_lines: Vec::new(),
             scrollbar_area: Rect::default(),
             accounts_area: Rect::default(),
             mouse_pos: (0, 0),
@@ -457,6 +820,8 @@ impl App {
             activity_scroll: 0,
             activity_auto_scroll: true,
             activity_area: Rect::default(),
+            activity_text_area: Rect::default(),
+            activity_visible_lines: Vec::new(),
             config_area: Rect::default(),
             config_fields: super::config_editor::build_config_fields(&crate::config::get_config()),
             config_selected: 0,
@@ -512,6 +877,10 @@ impl App {
             hovered_log_account: false,
             hovered_log_dropdown_item: None,
             log_search_area: Rect::default(),
+            text_selection: None,
+            selecting_text: false,
+            selection_moved: false,
+            copy_toast: None,
             // Mappings state: load from config
             mapping_preset: {
                 let cfg = crate::config::get_config();
@@ -2261,6 +2630,112 @@ impl App {
             .position(position);
     }
 
+    /// Get the active local selection bounds for a source/area.
+    pub fn active_selection_for_source(
+        &self,
+        source: SelectionSource,
+        area: Rect,
+        line_count: usize,
+    ) -> Option<LocalSelection> {
+        self.text_selection
+            .as_ref()
+            .and_then(|sel| local_selection_for(sel, source, area, line_count))
+    }
+
+    fn start_text_selection(&mut self, source: SelectionSource, col: u16, row: u16, area: Rect) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        let (col, row) = clamp_point_to_area(col, row, area);
+        self.text_selection = Some(TextSelection {
+            source,
+            anchor_col: col,
+            anchor_row: row,
+            focus_col: col,
+            focus_row: row,
+        });
+        self.selecting_text = true;
+        self.selection_moved = false;
+    }
+
+    fn update_text_selection_focus(&mut self, col: u16, row: u16) {
+        let Some(selection) = self.text_selection.as_mut() else {
+            return;
+        };
+
+        let area = match selection.source {
+            SelectionSource::Logs => self.logs_text_area,
+            SelectionSource::OverviewActivity => self.activity_text_area,
+        };
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+
+        let (col, row) = clamp_point_to_area(col, row, area);
+        if selection.focus_col != col || selection.focus_row != row {
+            self.selection_moved = true;
+        }
+        selection.focus_col = col;
+        selection.focus_row = row;
+    }
+
+    fn finish_text_selection_and_copy(&mut self) {
+        self.selecting_text = false;
+        let selection_moved = self.selection_moved;
+        self.selection_moved = false;
+
+        let Some(selection) = self.text_selection.take() else {
+            return;
+        };
+
+        if !selection_moved
+            || (selection.anchor_col == selection.focus_col
+                && selection.anchor_row == selection.focus_row)
+        {
+            self.copy_toast = Some((
+                "No selection captured; drag across text to copy".to_string(),
+                true,
+                Instant::now(),
+            ));
+            return;
+        }
+
+        let (area, lines) = match selection.source {
+            SelectionSource::Logs => (self.logs_text_area, self.logs_visible_lines.clone()),
+            SelectionSource::OverviewActivity => {
+                (self.activity_text_area, self.activity_visible_lines.clone())
+            }
+        };
+
+        let selected_text = extract_selected_text(&lines, area, selection.source, &selection);
+        if selected_text.is_empty() {
+            self.copy_toast = Some(("Selected range was empty".to_string(), true, Instant::now()));
+            return;
+        }
+
+        match copy_to_clipboard(&selected_text) {
+            Ok(backend) => {
+                self.copy_toast = Some((
+                    format!("Copied selection to clipboard via {backend}"),
+                    false,
+                    Instant::now(),
+                ));
+            }
+            Err(err) => {
+                self.copy_toast = Some((format!("Copy failed: {}", err), true, Instant::now()));
+            }
+        }
+    }
+
+    pub fn clear_expired_copy_toast(&mut self) {
+        if let Some((_, _, shown_at)) = self.copy_toast
+            && shown_at.elapsed() >= COPY_TOAST_TTL
+        {
+            self.copy_toast = None;
+        }
+    }
+
     /// Handle mouse events
     pub fn handle_mouse(&mut self, kind: MouseEventKind, column: u16, row: u16) {
         // Always update mouse position for hover detection
@@ -2362,6 +2837,32 @@ impl App {
                     return;
                 }
 
+                // Start drag-selection in log text view (excluding toolbar/scrollbar)
+                if self.current_tab == Tab::Logs
+                    && self.is_in_rect(column, row, self.logs_text_area)
+                {
+                    self.start_text_selection(
+                        SelectionSource::Logs,
+                        column,
+                        row,
+                        self.logs_text_area,
+                    );
+                    return;
+                }
+
+                // Start drag-selection in overview's recent activity panel.
+                if self.current_tab == Tab::Overview
+                    && self.is_in_rect(column, row, self.activity_text_area)
+                {
+                    self.start_text_selection(
+                        SelectionSource::OverviewActivity,
+                        column,
+                        row,
+                        self.activity_text_area,
+                    );
+                    return;
+                }
+
                 // Check tab clicks
                 for (i, tab_area) in self.tab_areas.iter().enumerate() {
                     if self.is_in_rect(column, row, *tab_area)
@@ -2421,11 +2922,22 @@ impl App {
                     // Apply the offset so thumb stays under cursor
                     let adjusted_row = (row as i16 + self.scrollbar_drag_offset) as u16;
                     self.scroll_to_position(adjusted_row);
+                } else if self.selecting_text {
+                    self.update_text_selection_focus(column, row);
+                }
+            }
+            MouseEventKind::Moved => {
+                if self.selecting_text {
+                    self.update_text_selection_focus(column, row);
                 }
             }
             // Mouse button release
             MouseEventKind::Up(MouseButton::Left) => {
                 self.dragging_scrollbar = false;
+                if self.selecting_text {
+                    self.update_text_selection_focus(column, row);
+                    self.finish_text_selection_and_copy();
+                }
             }
             _ => {}
         }
@@ -2645,21 +3157,35 @@ pub fn run() -> io::Result<()> {
         // Poll for background startup warnings
         app.poll_startup_warnings();
 
+        // Clear auto-dismissing copy toast.
+        app.clear_expired_copy_toast();
+
         // Draw
-        terminal.draw(|frame| {
+        match terminal.draw(|frame| {
             render(frame, &mut app, elapsed);
-        })?;
+        }) {
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        }
 
         // Handle events (with timeout for ~60fps)
-        if event::poll(Duration::from_millis(16))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
+        let polled = match event::poll(Duration::from_millis(16)) {
+            Ok(polled) => polled,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        };
+        if polled {
+            match event::read() {
+                Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
                     app.handle_key(key.code);
                 }
-                Event::Mouse(mouse) => {
+                Ok(Event::Mouse(mouse)) => {
                     app.handle_mouse(mouse.kind, mouse.column, mouse.row);
                 }
-                _ => {}
+                Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) => return Err(err),
             }
         }
     }
@@ -2787,8 +3313,12 @@ fn render(frame: &mut Frame, app: &mut App, elapsed: Duration) {
         }
     }
 
-    // Footer
-    let footer = super::widgets::Footer::for_tab(app.current_tab);
+    // Footer (includes transient copy status when present)
+    let footer = if let Some((message, is_error, _)) = &app.copy_toast {
+        super::widgets::Footer::for_tab(app.current_tab).with_status(message.clone(), *is_error)
+    } else {
+        super::widgets::Footer::for_tab(app.current_tab)
+    };
     frame.render_widget(footer, chunks[3]);
 
     // Help overlay
@@ -2909,5 +3439,72 @@ mod tests {
 
         let warning = detect_startup_runtime_warning_message(&entries, true);
         assert!(warning.is_some());
+    }
+
+    #[test]
+    fn test_extract_selected_text_single_line_char_precise() {
+        let lines = vec!["0123456789".to_string()];
+        let area = Rect {
+            x: 10,
+            y: 5,
+            width: 20,
+            height: 4,
+        };
+        let selection = TextSelection {
+            source: SelectionSource::Logs,
+            anchor_col: 12,
+            anchor_row: 5,
+            focus_col: 14,
+            focus_row: 5,
+        };
+
+        let selected = extract_selected_text(&lines, area, SelectionSource::Logs, &selection);
+        assert_eq!(selected, "234");
+    }
+
+    #[test]
+    fn test_extract_selected_text_multi_line_reverse_drag() {
+        let lines = vec![
+            "012345".to_string(),
+            "abcdef".to_string(),
+            "UVWXYZ".to_string(),
+        ];
+        let area = Rect {
+            x: 10,
+            y: 5,
+            width: 20,
+            height: 5,
+        };
+        let selection = TextSelection {
+            source: SelectionSource::Logs,
+            anchor_col: 13,
+            anchor_row: 6,
+            focus_col: 12,
+            focus_row: 5,
+        };
+
+        let selected = extract_selected_text(&lines, area, SelectionSource::Logs, &selection);
+        assert_eq!(selected, "2345\nabcd");
+    }
+
+    #[test]
+    fn test_extract_selected_text_wrong_source_returns_empty() {
+        let lines = vec!["0123456789".to_string()];
+        let area = Rect {
+            x: 10,
+            y: 5,
+            width: 20,
+            height: 4,
+        };
+        let selection = TextSelection {
+            source: SelectionSource::OverviewActivity,
+            anchor_col: 10,
+            anchor_row: 5,
+            focus_col: 12,
+            focus_row: 5,
+        };
+
+        let selected = extract_selected_text(&lines, area, SelectionSource::Logs, &selection);
+        assert!(selected.is_empty());
     }
 }

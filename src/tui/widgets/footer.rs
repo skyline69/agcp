@@ -5,11 +5,20 @@ use crate::tui::theme;
 
 pub struct Footer {
     pub keybinds: Vec<(&'static str, &'static str)>,
+    pub status: Option<(String, bool)>,
 }
 
 impl Footer {
     pub fn new(keybinds: Vec<(&'static str, &'static str)>) -> Self {
-        Self { keybinds }
+        Self {
+            keybinds,
+            status: None,
+        }
+    }
+
+    pub fn with_status(mut self, message: impl Into<String>, is_error: bool) -> Self {
+        self.status = Some((message.into(), is_error));
+        self
     }
 
     /// Get context-sensitive keybinds for a specific tab
@@ -33,6 +42,7 @@ impl Footer {
                 binds.insert(2, ("a", "Account"));
                 binds.insert(2, ("/", "Search"));
                 binds.insert(2, ("d/i/w/e", "Levels"));
+                binds.insert(2, ("Drag", "Copy"));
             }
             Tab::Config => {
                 return Self::new(vec![
@@ -62,6 +72,7 @@ impl Footer {
                 binds.insert(2, ("r", "Restart"));
                 binds.insert(2, ("x", "Stop"));
                 binds.insert(2, ("s", "Start"));
+                binds.insert(2, ("Drag", "Copy"));
             }
             Tab::Usage => {
                 binds.insert(2, ("r", "Reset"));
@@ -75,6 +86,16 @@ impl Footer {
 
 impl Widget for Footer {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        if let Some((message, is_error)) = self.status {
+            let style = if is_error {
+                theme::error()
+            } else {
+                theme::success()
+            };
+            Paragraph::new(Line::from(vec![Span::styled(message, style)])).render(area, buf);
+            return;
+        }
+
         let spans: Vec<Span> = self
             .keybinds
             .iter()

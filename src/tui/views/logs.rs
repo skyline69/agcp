@@ -3,7 +3,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, Wrap,
 };
 
-use crate::tui::app::App;
+use crate::tui::app::{App, LocalSelection, SelectionSource};
 use crate::tui::data::LogLevel;
 use crate::tui::theme;
 
@@ -37,11 +37,18 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         height: inner.height.saturating_sub(toolbar_height),
         ..inner
     };
+    // Reserve space for scrollbar and keep a dedicated text area for selection.
+    let logs_area = Rect {
+        width: content_area.width.saturating_sub(1),
+        ..content_area
+    };
+    app.logs_text_area = logs_area;
 
     // Render the filter toolbar (stores hit-test rects in app)
     render_toolbar(frame, toolbar_area, app);
 
     if app.logs.is_empty() {
+        app.logs_visible_lines.clear();
         let empty_msg = Text::from("No logs yet. Start the server with 'agcp'")
             .style(theme::dim())
             .centered();
@@ -64,31 +71,51 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         .saturating_sub(visible_height)
         .saturating_sub(app.log_scroll);
 
-    // Build styled text only for the visible window
-    let lines: Vec<Line> = if has_filter {
+    // Collect visible indices once so we can build both rendering and copy snapshots.
+    let visible_indices: Vec<usize> = if has_filter {
         app.log_filtered_indices
             .iter()
             .skip(scroll_offset)
             .take(visible_height)
-            .filter_map(|&idx| app.logs.get(idx))
-            .map(|entry| highlight_log_line(&entry.line, entry.level))
+            .copied()
             .collect()
     } else {
-        app.logs
-            .iter()
+        (0..app.logs.len())
             .skip(scroll_offset)
             .take(visible_height)
-            .map(|entry| highlight_log_line(&entry.line, entry.level))
             .collect()
     };
+    app.logs_visible_lines = visible_indices
+        .iter()
+        .filter_map(|&idx| app.logs.get(idx).map(|entry| entry.line.clone()))
+        .collect();
+
+    let selection = app.active_selection_for_source(
+        SelectionSource::Logs,
+        logs_area,
+        app.logs_visible_lines.len(),
+    );
+
+    // Build styled text only for the visible window
+    let lines: Vec<Line> = visible_indices
+        .iter()
+        .enumerate()
+        .filter_map(|(row, &idx)| {
+            app.logs.get(idx).map(|entry| {
+                let line = highlight_log_line(&entry.line, entry.level);
+                if let Some(bounds) = selection
+                    && let Some((start_char, end_char_exclusive)) =
+                        selection_cols_for_row(bounds, row, &entry.line)
+                {
+                    return apply_selection_to_line(line, start_char, end_char_exclusive);
+                }
+                line
+            })
+        })
+        .collect();
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
 
-    // Reserve space for scrollbar
-    let logs_area = Rect {
-        width: content_area.width.saturating_sub(1),
-        ..content_area
-    };
     frame.render_widget(paragraph, logs_area);
 
     // Render scrollbar
@@ -476,6 +503,96 @@ pub fn highlight_log_line(line: &str, level: LogLevel) -> Line<'static> {
     parse_key_value_pairs(remaining, &mut spans);
 
     Line::from(spans)
+}
+
+pub(crate) fn selection_cols_for_row(
+    selection: LocalSelection,
+    row: usize,
+    line: &str,
+) -> Option<(usize, usize)> {
+    if row < selection.start_row || row > selection.end_row {
+        return None;
+    }
+
+    let line_len_chars = line.chars().count();
+    let start_char = if row == selection.start_row {
+        selection.start_col.min(line_len_chars)
+    } else {
+        0
+    };
+    let end_char_exclusive = if row == selection.end_row {
+        selection.end_col_exclusive.min(line_len_chars)
+    } else {
+        line_len_chars
+    };
+
+    (start_char < end_char_exclusive).then_some((start_char, end_char_exclusive))
+}
+
+pub(crate) fn apply_selection_to_line(
+    line: Line<'static>,
+    start_char: usize,
+    end_char_exclusive: usize,
+) -> Line<'static> {
+    if start_char >= end_char_exclusive {
+        return line;
+    }
+
+    let mut out: Vec<Span> = Vec::new();
+    let mut cursor = 0usize;
+
+    for span in line.spans {
+        let style = span.style;
+        let text = span.content.into_owned();
+        let span_len = text.chars().count();
+        if span_len == 0 {
+            out.push(Span::styled(text, style));
+            continue;
+        }
+
+        let span_start = cursor;
+        let span_end = cursor + span_len;
+        if end_char_exclusive <= span_start || start_char >= span_end {
+            out.push(Span::styled(text, style));
+            cursor = span_end;
+            continue;
+        }
+
+        let local_start = start_char.saturating_sub(span_start).min(span_len);
+        let local_end = end_char_exclusive.saturating_sub(span_start).min(span_len);
+
+        let (prefix, rest) = split_at_char(&text, local_start);
+        let (selected, suffix) = split_at_char(rest, local_end.saturating_sub(local_start));
+
+        if !prefix.is_empty() {
+            out.push(Span::styled(prefix.to_string(), style));
+        }
+        if !selected.is_empty() {
+            out.push(Span::styled(
+                selected.to_string(),
+                style.patch(Style::default().bg(Color::Rgb(42, 68, 102))),
+            ));
+        }
+        if !suffix.is_empty() {
+            out.push(Span::styled(suffix.to_string(), style));
+        }
+
+        cursor = span_end;
+    }
+
+    Line::from(out)
+}
+
+fn split_at_char(s: &str, char_idx: usize) -> (&str, &str) {
+    let byte_idx = if char_idx == 0 {
+        0
+    } else {
+        s.char_indices()
+            .nth(char_idx)
+            .map(|(idx, _)| idx)
+            .unwrap_or(s.len())
+    };
+    s.split_at(byte_idx)
 }
 
 /// Find the position of the log level in the line
