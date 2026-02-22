@@ -3,6 +3,50 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.3.0] - 2026-02-22
+
+
+### Bug Fixes
+
+- Resolve version gate and SSE parser misparse of CloudCodeResponse ([c77d1aa](https://github.com/skyline69/agcp/commit/c77d1aa85f4f3c4bfe500fece524e07a586055b7)) — Ö. Efe D.
+- Session-scoped chart X-axis and clippy/test fixes ([883e106](https://github.com/skyline69/agcp/commit/883e10645217cf0969ccc570686ccbe9edc16cb9)) — Ö. Efe D.
+- Default sonnet to 4.6-thinking and ignore stale warning ([0c7ae83](https://github.com/skyline69/agcp/commit/0c7ae83a77c5ee85c8db98cde5940cafbe94ec12)) — Ö. Efe D.
+- Collapse macos plist if-chain for clippy ([0d8d243](https://github.com/skyline69/agcp/commit/0d8d243d9d2b7448caabd9fc6963f21ba77cd2c2)) — Ö. Efe D.
+- Route sonnet aliases to claude-sonnet-4-6 ([1084ed1](https://github.com/skyline69/agcp/commit/1084ed144a5721b74f1f7cf15ad1976cdac1baf0)) — Ö. Efe D.
+
+
+### Features
+
+- V1.3 - OpenAI tool streaming, Responses API function calls, thinking config, CORS, and more ([88a6200](https://github.com/skyline69/agcp/commit/88a620085743176a9e6a1a9babafeac5e0cb6252)) — Ö. Efe D.
+- Structured output, token counting, PDF support, n>1 candidates, persistent stats, request ID forwarding ([fb10c8c](https://github.com/skyline69/agcp/commit/fb10c8cc22a53a3429821fa19cccc4860e3d1058)) — Ö. Efe D.
+- Animated count-up for token usage displays ([9c9e0ae](https://github.com/skyline69/agcp/commit/9c9e0ae6c03c4a82296563b40b29a8c8ecde7ce7)) — Ö. Efe D.
+- Add justfile with recipes for common development tasks ([8223aad](https://github.com/skyline69/agcp/commit/8223aade558a81cd6c1a93ce62544ae05b42091e)) — Ö. Efe D.
+- Implement client fingerprinting to camouflage API requests with Antigravity Electron headers. ([4820dc4](https://github.com/skyline69/agcp/commit/4820dc4fbb423230dd3f7cf42d97c84d6eb5afc8)) — Ö. Efe D.
+- Introduce client identity camouflage and integrate Bun/Tailwind CSS for documentation build. ([2d9c40f](https://github.com/skyline69/agcp/commit/2d9c40fcf4ec57a2d827d77ce8f30b6430bd9f6e)) — Ö. Efe D.
+- Add Windows-specific application version detection from `package.json` in `LOCALAPPDATA`. ([f338da7](https://github.com/skyline69/agcp/commit/f338da7c33ef5632ff5c905b75496357d9a66f4f)) — Ö. Efe D.
+- Add warmup interception and media parity endpoints ([e8384a0](https://github.com/skyline69/agcp/commit/e8384a0a527125d935d2cb6180e765f979fdd5f5)) — Ö. Efe D.
+- Show loading spinner for accounts list ([d9940d7](https://github.com/skyline69/agcp/commit/d9940d71642b99e8314da5370c89d469f68a90e2)) — Ö. Efe D.
+- Add compatibility aliases for completions and healthz ([c24fecc](https://github.com/skyline69/agcp/commit/c24fecceec7b2f7c3ec4eb6f244388b40c54901c)) — Ö. Efe D.
+- Add drag-copy selection with resilient clipboard backends ([8ed513a](https://github.com/skyline69/agcp/commit/8ed513a01721190e2dae690d6be5a8676ee46510)) — Ö. Efe D.
+
+
+### Miscellaneous
+
+- Bump version to 1.3.0 ([9f45037](https://github.com/skyline69/agcp/commit/9f450371475d34d181a0933556660cf9fb564cef)) — Ö. Efe D.
+- Initialize AGENTS.md's ([c9e036f](https://github.com/skyline69/agcp/commit/c9e036f93b21bf893b54457a5caf6a746f22cf7e)) — Ö. Efe D.
+- Add spaces around variables in `justfile` commands for improved readability. ([118fef9](https://github.com/skyline69/agcp/commit/118fef9185c429e525226cf907562d1ed0e35d76)) — Ö. Efe D.
+
+
+### Performance
+
+- True SSE streaming pass-through and reduced lock contention ([2b1fe5d](https://github.com/skyline69/agcp/commit/2b1fe5d9dab475751b584219c11d215c064d581c)) — Ö. Efe D.
+
+
+### deps
+
+- Update tachyonfx dependency to version 0.24. ([04b7977](https://github.com/skyline69/agcp/commit/04b79771fafc88367c579240979d0a2e0768cd26)) — Ö. Efe D.
+
+
 ## [v1.2.3] - 2026-02-11
 
 
