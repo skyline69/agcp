@@ -52,16 +52,16 @@ fn detect_local_version() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
         let plist = std::path::Path::new("/Applications/Antigravity.app/Contents/Info.plist");
-        if let Ok(content) = std::fs::read_to_string(plist) {
-            if let Some(pos) = content.find("CFBundleShortVersionString") {
-                let after = &content[pos..];
-                if let Some(s) = after.find("<string>") {
-                    let rest = &after[s + 8..];
-                    if let Some(e) = rest.find("</string>") {
-                        let ver = &rest[..e];
-                        if extract_semver(ver).is_some() {
-                            return Some(ver.to_string());
-                        }
+        if let Ok(content) = std::fs::read_to_string(plist)
+            && let Some(pos) = content.find("CFBundleShortVersionString")
+        {
+            let after = &content[pos..];
+            if let Some(s) = after.find("<string>") {
+                let rest = &after[s + 8..];
+                if let Some(e) = rest.find("</string>") {
+                    let ver = &rest[..e];
+                    if extract_semver(ver).is_some() {
+                        return Some(ver.to_string());
                     }
                 }
             }
