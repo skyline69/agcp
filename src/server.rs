@@ -208,6 +208,11 @@ async fn handle_request(
             // OpenAI Responses API (used by Codex CLI)
             (Method::POST, "/v1/responses") => handle_responses(req, state, &request_id).await,
 
+            // OpenAI legacy Completions compatibility
+            (Method::POST, "/v1/completions") => {
+                handle_chat_completions(req, state, &request_id).await
+            }
+
             // OpenAI Images API
             (Method::POST, "/v1/images/generations") => {
                 handle_images_generations(req, state, &request_id).await
@@ -255,6 +260,12 @@ async fn handle_request(
             (Method::POST, "/api/event_logging/batch") => {
                 Ok(json_response(StatusCode::OK, r#"{"status":"ok"}"#))
             }
+            (Method::POST, "/v1/api/event_logging/batch") => {
+                Ok(json_response(StatusCode::OK, r#"{"status":"ok"}"#))
+            }
+            (Method::POST, "/v1/api/event_logging") => {
+                Ok(json_response(StatusCode::OK, r#"{"status":"ok"}"#))
+            }
 
             // Claude Code heartbeat/event requests to root
             (Method::POST, "/") => Ok(json_response(StatusCode::OK, r#"{"status":"ok"}"#)),
@@ -292,7 +303,7 @@ async fn handle_request(
             (Method::GET, "/api/logs/stream") => handle_logs_stream().await,
 
             // Health check
-            (Method::GET, "/health") | (Method::GET, "/") => {
+            (Method::GET, "/health") | (Method::GET, "/healthz") | (Method::GET, "/") => {
                 Ok(json_response(StatusCode::OK, r#"{"status":"ok"}"#))
             }
 
@@ -385,6 +396,8 @@ fn is_internal_endpoint(path: &str) -> bool {
             | "/account-limits"
             | "/internal/warmup"
             | "/api/event_logging/batch"
+            | "/v1/api/event_logging/batch"
+            | "/v1/api/event_logging"
     )
 }
 
@@ -4867,6 +4880,18 @@ mod tests {
         assert!(body.contains(r#""status":"ok"#), "body: {body}");
     }
 
+    #[tokio::test]
+    async fn test_healthz_check() {
+        let addr = spawn_test_server().await;
+        let (status, body) = http_request(
+            addr,
+            "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(body.contains(r#""status":"ok"#), "body: {body}");
+    }
+
     // -- Models --
 
     #[tokio::test]
@@ -4930,6 +4955,47 @@ mod tests {
         .await;
         assert_eq!(status, 200, "body: {body}");
         assert!(body.contains(r#""status":"ok"#), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_event_logging_batch_v1_alias() {
+        let addr = spawn_test_server().await;
+        let (status, body) = http_request(
+            addr,
+            "POST /v1/api/event_logging/batch HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}",
+        )
+        .await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(body.contains(r#""status":"ok"#), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_event_logging_v1_alias() {
+        let addr = spawn_test_server().await;
+        let (status, body) = http_request(
+            addr,
+            "POST /v1/api/event_logging HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}",
+        )
+        .await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(body.contains(r#""status":"ok"#), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_openai_completions_alias_route() {
+        let addr = spawn_test_server().await;
+        let payload =
+            r#"{"model":"gemini-3-flash","messages":[{"role":"user","content":"hello"}]}"#;
+        let req = format!(
+            "POST /v1/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, _body) = http_request(addr, &req).await;
+        assert_eq!(
+            status, 401,
+            "expected auth failure with no accounts, proving route is wired"
+        );
     }
 
     // -- POST / heartbeat --
