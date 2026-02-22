@@ -2810,7 +2810,9 @@ async fn run_accounts_command(args: &[String]) {
 
             // Refresh subscription tiers from API
             let http_client = HttpClient::new();
+            let spinner = Spinner::new("Fetching account metadata...");
             store.refresh_subscription_tiers(&http_client).await;
+            spinner.stop();
 
             println!();
             println!(
