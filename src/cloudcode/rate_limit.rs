@@ -1,7 +1,9 @@
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::Instant;
+
+use parking_lot::RwLock;
+use serde_json::Value;
 
 pub const RATE_LIMIT_DEDUP_WINDOW_MS: u64 = 2000;
 pub const RATE_LIMIT_STATE_RESET_MS: u64 = 120_000;
@@ -30,8 +32,15 @@ static QUOTA_RESET_DELAY_REGEX: LazyLock<regex_lite::Regex> = LazyLock::new(|| {
 
 /// Pre-compiled regex for parsing quotaResetTimestamp from error messages
 static QUOTA_RESET_TIMESTAMP_REGEX: LazyLock<regex_lite::Regex> = LazyLock::new(|| {
-    regex_lite::Regex::new(r#"quotaresettimestamp[:\s"]+(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)"#)
-        .expect("Invalid quotaResetTimestamp regex")
+    regex_lite::Regex::new(
+        r#"quotaresettimestamp[:\s"]+(\d{4}-\d{2}-\d{2}[tT][\d:.]+(?:[zZ]|[+-]\d{2}:\d{2})?)"#,
+    )
+    .expect("Invalid quotaResetTimestamp regex")
+});
+
+/// Pre-compiled regex for parsing duration segments (e.g., "1.5s", "200ms")
+static DURATION_SEGMENT_REGEX: LazyLock<regex_lite::Regex> = LazyLock::new(|| {
+    regex_lite::Regex::new(r#"([\d.]+)\s*(ms|s|m|h)"#).expect("Invalid duration regex")
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,9 +224,58 @@ pub fn calculate_smart_backoff(
 }
 
 pub fn parse_reset_time(error_body: &str, default_ms: u64) -> (u64, String) {
-    let lower = error_body.to_lowercase();
+    if let Ok(json) = serde_json::from_str::<Value>(error_body) {
+        let error_node = json.get("error").unwrap_or(&json);
+        let message = error_node
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or(error_body);
+        let details = error_node
+            .get("details")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice);
 
+        return parse_reset_time_with_details(message, details, default_ms);
+    }
+
+    parse_reset_time_with_details(error_body, None, default_ms)
+}
+
+/// Parse reset time using error message + optional structured Google `error.details`.
+pub fn parse_reset_time_with_details(
+    message: &str,
+    details: Option<&[Value]>,
+    default_ms: u64,
+) -> (u64, String) {
     let mut reset_ms: Option<u64> = None;
+
+    if let Some(details) = details {
+        if reset_ms.is_none()
+            && let Some(ms) = parse_retry_delay_from_details(details)
+        {
+            reset_ms = Some(ms);
+            tracing::debug!(reset_ms = ms, "Parsed retryDelay from error.details");
+        }
+
+        if reset_ms.is_none()
+            && let Some(ms) = parse_quota_reset_delay_from_details(details)
+        {
+            reset_ms = Some(ms);
+            tracing::debug!(reset_ms = ms, "Parsed quotaResetDelay from error.details");
+        }
+
+        if reset_ms.is_none()
+            && let Some(ms) = parse_quota_reset_timestamp_from_details(details)
+        {
+            reset_ms = Some(ms);
+            tracing::debug!(
+                reset_ms = ms,
+                "Parsed quotaResetTimestamp from error.details"
+            );
+        }
+    }
+
+    let lower = message.to_lowercase();
 
     if reset_ms.is_none()
         && let Some(ms) = parse_quota_reset_delay(&lower)
@@ -247,20 +305,7 @@ pub fn parse_reset_time(error_body: &str, default_ms: u64) -> (u64, String) {
         tracing::debug!(reset_ms = ms, "Parsed retry-after from body");
     }
 
-    let final_ms = match reset_ms {
-        Some(0) => {
-            tracing::debug!("Reset time invalid (0ms), using 500ms default");
-            500
-        }
-        Some(ms) if ms < 500 => {
-            tracing::debug!(ms = ms, "Short reset time, adding 200ms buffer");
-            ms + 200
-        }
-        Some(ms) => ms,
-        None => default_ms,
-    };
-
-    (final_ms, format_duration(final_ms))
+    finalize_reset_ms(reset_ms, default_ms)
 }
 
 fn parse_quota_reset_delay(text: &str) -> Option<u64> {
@@ -283,70 +328,14 @@ fn parse_quota_reset_delay(text: &str) -> Option<u64> {
 fn parse_quota_reset_timestamp(text: &str) -> Option<u64> {
     if let Some(captures) = QUOTA_RESET_TIMESTAMP_REGEX.captures(text) {
         let timestamp_str = captures.get(1)?.as_str();
-        if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp_str) {
-            let now = chrono::Utc::now();
-            let delta = parsed.signed_duration_since(now);
-            if delta.num_milliseconds() > 0 {
-                return Some(delta.num_milliseconds() as u64);
-            }
-            return Some(500);
-        }
+        return parse_timestamp_delta_ms(timestamp_str);
     }
 
     None
 }
 
 fn parse_duration_string(text: &str) -> Option<u64> {
-    let mut total_ms = 0u64;
-    let mut found = false;
-
-    if let Some(pos) = text.find('h')
-        && pos > 0
-    {
-        let start = text[..pos]
-            .rfind(|c: char| !c.is_ascii_digit())
-            .map(|p| p + 1)
-            .unwrap_or(0);
-        if let Ok(hours) = text[start..pos].parse::<u64>() {
-            total_ms += hours * 3600 * 1000;
-            found = true;
-        }
-    }
-
-    if let Some(pos) = text.find('m') {
-        if pos + 1 < text.len() && text.as_bytes().get(pos + 1) == Some(&b's') {
-        } else if pos > 0 {
-            let start = text[..pos]
-                .rfind(|c: char| !c.is_ascii_digit())
-                .map(|p| p + 1)
-                .unwrap_or(0);
-            if let Ok(mins) = text[start..pos].parse::<u64>() {
-                total_ms += mins * 60 * 1000;
-                found = true;
-            }
-        }
-    }
-
-    for (i, c) in text.char_indices() {
-        if c == 's' && i > 0 {
-            if i >= 1 && text.as_bytes().get(i - 1) == Some(&b'm') {
-                continue;
-            }
-            let start = text[..i]
-                .rfind(|c: char| !c.is_ascii_digit())
-                .map(|p| p + 1)
-                .unwrap_or(0);
-            if start < i
-                && let Ok(secs) = text[start..i].parse::<u64>()
-            {
-                total_ms += secs * 1000;
-                found = true;
-                break;
-            }
-        }
-    }
-
-    if found { Some(total_ms) } else { None }
+    parse_duration_ms(text)
 }
 
 fn parse_retry_after(text: &str) -> Option<u64> {
@@ -362,6 +351,122 @@ fn parse_retry_after(text: &str) -> Option<u64> {
     } else {
         None
     }
+}
+
+fn parse_duration_ms(duration_str: &str) -> Option<u64> {
+    let lower = duration_str.to_lowercase();
+    let mut total_ms: f64 = 0.0;
+    let mut matched = false;
+
+    for cap in DURATION_SEGMENT_REGEX.captures_iter(&lower) {
+        let value: f64 = cap.get(1)?.as_str().parse().ok()?;
+        let unit = cap.get(2)?.as_str();
+        matched = true;
+
+        match unit {
+            "ms" => total_ms += value,
+            "s" => total_ms += value * 1000.0,
+            "m" => total_ms += value * 60.0 * 1000.0,
+            "h" => total_ms += value * 60.0 * 60.0 * 1000.0,
+            _ => {}
+        }
+    }
+
+    if matched {
+        Some(total_ms.round() as u64)
+    } else {
+        None
+    }
+}
+
+fn parse_retry_delay_from_details(details: &[Value]) -> Option<u64> {
+    for detail in details {
+        let is_retry_info = detail
+            .get("@type")
+            .and_then(Value::as_str)
+            .map(|t| t.contains("google.rpc.RetryInfo") || t.contains("RetryInfo"))
+            .unwrap_or(false);
+
+        if !is_retry_info {
+            continue;
+        }
+
+        if let Some(delay) = detail.get("retryDelay").and_then(Value::as_str)
+            && let Some(ms) = parse_duration_ms(delay)
+        {
+            return Some(ms);
+        }
+    }
+
+    None
+}
+
+fn parse_quota_reset_delay_from_details(details: &[Value]) -> Option<u64> {
+    for detail in details {
+        let delay = detail
+            .get("metadata")
+            .and_then(|m| m.get("quotaResetDelay"))
+            .and_then(Value::as_str)
+            .or_else(|| detail.get("quotaResetDelay").and_then(Value::as_str));
+
+        if let Some(delay) = delay
+            && let Some(ms) = parse_duration_ms(delay)
+        {
+            return Some(ms);
+        }
+    }
+
+    None
+}
+
+fn parse_quota_reset_timestamp_from_details(details: &[Value]) -> Option<u64> {
+    for detail in details {
+        let timestamp = detail
+            .get("metadata")
+            .and_then(|m| m.get("quotaResetTimestamp"))
+            .and_then(Value::as_str)
+            .or_else(|| detail.get("quotaResetTimestamp").and_then(Value::as_str));
+
+        if let Some(timestamp) = timestamp
+            && let Some(ms) = parse_timestamp_delta_ms(timestamp)
+        {
+            return Some(ms);
+        }
+    }
+
+    None
+}
+
+fn parse_timestamp_delta_ms(timestamp_str: &str) -> Option<u64> {
+    let normalized = timestamp_str.trim().replace('t', "T").replace('z', "Z");
+
+    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&normalized) {
+        let now = chrono::Utc::now();
+        let delta = parsed.signed_duration_since(now);
+        if delta.num_milliseconds() > 0 {
+            return Some(delta.num_milliseconds() as u64);
+        }
+        return Some(500);
+    }
+
+    None
+}
+
+fn finalize_reset_ms(reset_ms: Option<u64>, default_ms: u64) -> (u64, String) {
+    let final_ms = match reset_ms {
+        Some(0) => {
+            tracing::debug!("Reset time invalid (0ms), using 500ms default");
+            500
+        }
+        Some(ms) if ms < 500 => {
+            tracing::debug!(ms = ms, "Short reset time, adding 200ms buffer");
+            ms + 200
+        }
+        Some(ms) => ms,
+        None => default_ms,
+    };
+
+    (final_ms, format_duration(final_ms))
 }
 
 pub fn format_duration(ms: u64) -> String {
@@ -406,6 +511,7 @@ mod tests {
         assert_eq!(parse_duration_string("5m0s"), Some(300000));
         assert_eq!(parse_duration_string("45s"), Some(45000));
         assert_eq!(parse_duration_string("1h23m45s"), Some(5025000));
+        assert_eq!(parse_duration_string("1.5s"), Some(1500));
     }
 
     #[test]
@@ -477,5 +583,23 @@ mod tests {
         assert!(is_model_capacity_exhausted("capacity_exhausted"));
         assert!(is_model_capacity_exhausted("model is currently overloaded"));
         assert!(!is_model_capacity_exhausted("quota_exhausted"));
+    }
+
+    #[test]
+    fn test_parse_reset_time_from_retry_info_details_json() {
+        let body = r#"{
+            "error": {
+                "code": 429,
+                "message": "Rate limited",
+                "details": [{
+                    "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                    "retryDelay": "1.203608125s"
+                }]
+            }
+        }"#;
+
+        let (reset_ms, reset_str) = parse_reset_time(body, FIRST_RETRY_DELAY_MS);
+        assert_eq!(reset_ms, 1204);
+        assert_eq!(reset_str, "1s");
     }
 }

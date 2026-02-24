@@ -17,6 +17,7 @@ use super::rate_limit::{
     CAPACITY_BACKOFF_TIERS_MS, DEFAULT_COOLDOWN_MS, FIRST_RETRY_DELAY_MS, MAX_CAPACITY_RETRIES,
     MAX_WAIT_BEFORE_ERROR_MS, calculate_smart_backoff, clear_rate_limit_state,
     get_rate_limit_backoff, is_model_capacity_exhausted, parse_reset_time,
+    parse_reset_time_with_details,
 };
 
 /// Google Cloud Code API endpoints (daily and production).
@@ -153,8 +154,11 @@ impl CloudCodeClient {
                             if error.code == 429 && retry_count < self.max_retries {
                                 retry_count += 1;
 
-                                let (wait_ms, reset_time_str) =
-                                    parse_reset_time(&error.message, FIRST_RETRY_DELAY_MS);
+                                let (wait_ms, reset_time_str) = parse_reset_time_with_details(
+                                    &error.message,
+                                    error.details.as_deref(),
+                                    FIRST_RETRY_DELAY_MS,
+                                );
 
                                 // Check if this is a model capacity issue (not quota)
                                 if is_model_capacity_exhausted(&error.message) {
