@@ -292,20 +292,22 @@ agcp accounts remove <id>     # Remove an account
 | Endpoint | Description |
 |----------|-------------|
 | `POST /v1/messages` | Anthropic Messages API (streaming and non-streaming) |
-| `POST /v1/chat/completions` | OpenAI Chat Completions compatibility |
-| `POST /v1/responses` | OpenAI Responses compatibility |
-| `POST /v1/images/generations` | OpenAI image generation compatibility |
-| `POST /v1/images/edits` | OpenAI image edit compatibility (multipart) |
-| `POST /v1/images/variations` | OpenAI image variation compatibility (multipart) |
-| `POST /v1/audio/transcriptions` | OpenAI audio transcription compatibility |
-| `POST /v1/models/detect` | Detect mapped model and capability hints |
+| `POST /v1/chat/completions` (`/chat/completions`) | OpenAI Chat Completions compatibility |
+| `POST /v1/responses` (`/responses`) | OpenAI Responses compatibility |
+| `POST /v1/completions` (`/completions`) | OpenAI legacy Completions (`prompt` and `messages`, streaming/non-streaming) |
+| `POST /v1/images/generations` (`/images/generations`) | OpenAI image generation compatibility |
+| `POST /v1/images/edits` (`/images/edits`) | OpenAI image edit compatibility (multipart) |
+| `POST /v1/images/variations` (`/images/variations`) | OpenAI image variation compatibility (multipart) |
+| `POST /v1/audio/transcriptions` (`/audio/transcriptions`) | OpenAI audio transcription compatibility |
+| `POST /v1/models/detect` (`/models/detect`) | Detect mapped model and capability hints |
 | `GET /v1beta/models` | Native Gemini model listing |
 | `GET /v1beta/models/{model}` | Native Gemini model metadata |
 | `POST /v1beta/models/{model}:countTokens` | Native Gemini token counting |
 | `POST /v1beta/models/{model}:generateContent` | Native Gemini non-streaming generation |
 | `POST /v1beta/models/{model}:streamGenerateContent` | Native Gemini streaming generation (SSE) |
 | `POST /internal/warmup` | Trigger internal warmup and optional quota refresh |
-| `GET /v1/models` | List available models |
+| `GET /v1/models` (`/models`) | List available models |
+| `GET /v1/models/{id}` (`/models/{id}`) | Get model metadata by id (aliases supported, e.g. `flash`) |
 | `GET /health` | Health check |
 | `GET /stats` | Server and cache statistics |
 
@@ -346,6 +348,16 @@ curl -s http://127.0.0.1:8080/v1/audio/transcriptions \
 curl -s http://127.0.0.1:8080/v1/models/detect \
   -H "Content-Type: application/json" \
   -d '{"model":"flash"}'
+
+# Legacy OpenAI completions (prompt-style, non-streaming)
+curl -s http://127.0.0.1:8080/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gemini-3-flash","prompt":"Write a haiku about Rust"}'
+
+# Legacy OpenAI completions (prompt-style, streaming SSE)
+curl -N http://127.0.0.1:8080/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gemini-3-flash","prompt":"Say hello in 3 languages","stream":true}'
 ```
 
 ## Response Caching

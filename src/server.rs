@@ -34,7 +34,8 @@ use crate::format::{
     ChatCompletionRequest, MessagesRequest, ModelInfo, ModelsResponse, StreamEvent,
 };
 use crate::models::{
-    Model, get_fallback_model, get_model_family, is_thinking_model, resolve_with_mappings,
+    Model, get_fallback_model, get_model_family, is_thinking_model, resolve_model_alias,
+    resolve_with_mappings,
 };
 use crate::stats::get_stats;
 
@@ -44,6 +45,9 @@ const MAX_REQUEST_SIZE: usize = 10 * 1024 * 1024;
 /// Maximum time to wait for a single upstream frame before considering the
 /// stream stalled (seconds).
 const STREAM_FRAME_TIMEOUT_SECS: u64 = 300;
+
+/// Heartbeat cadence for OpenAI/Responses SSE endpoints.
+const STREAM_HEARTBEAT_SECS: u64 = 15;
 
 /// Channel buffer size for streaming SSE responses.
 ///
@@ -221,28 +225,51 @@ async fn handle_request(
             (Method::POST, "/v1/chat/completions") => {
                 handle_chat_completions(req, state, &request_id).await
             }
+            (Method::POST, "/chat/completions") => {
+                handle_chat_completions(req, state, &request_id).await
+            }
 
             // OpenAI Responses API (used by Codex CLI)
             (Method::POST, "/v1/responses") => handle_responses(req, state, &request_id).await,
+            (Method::POST, "/responses") => handle_responses(req, state, &request_id).await,
+            // Compatibility alias for clients that mis-join base paths
+            // and emit `/v1/chat/completions/responses`.
+            (Method::POST, "/v1/chat/completions/responses") => {
+                handle_responses(req, state, &request_id).await
+            }
+            (Method::POST, "/chat/completions/responses") => {
+                handle_responses(req, state, &request_id).await
+            }
 
             // OpenAI legacy Completions compatibility
-            (Method::POST, "/v1/completions") => {
-                handle_chat_completions(req, state, &request_id).await
-            }
+            (Method::POST, "/v1/completions") => handle_completions(req, state, &request_id).await,
+            (Method::POST, "/completions") => handle_completions(req, state, &request_id).await,
 
             // OpenAI Images API
             (Method::POST, "/v1/images/generations") => {
                 handle_images_generations(req, state, &request_id).await
             }
+            (Method::POST, "/images/generations") => {
+                handle_images_generations(req, state, &request_id).await
+            }
             (Method::POST, "/v1/images/edits") => {
+                handle_images_edit_like(req, state, &request_id, ImageEditMode::Edits).await
+            }
+            (Method::POST, "/images/edits") => {
                 handle_images_edit_like(req, state, &request_id, ImageEditMode::Edits).await
             }
             (Method::POST, "/v1/images/variations") => {
                 handle_images_edit_like(req, state, &request_id, ImageEditMode::Variations).await
             }
+            (Method::POST, "/images/variations") => {
+                handle_images_edit_like(req, state, &request_id, ImageEditMode::Variations).await
+            }
 
             // OpenAI Audio API
             (Method::POST, "/v1/audio/transcriptions") => {
+                handle_audio_transcriptions(req, state, &request_id).await
+            }
+            (Method::POST, "/audio/transcriptions") => {
                 handle_audio_transcriptions(req, state, &request_id).await
             }
 
@@ -289,7 +316,11 @@ async fn handle_request(
 
             // Models API
             (Method::GET, "/v1/models") => handle_models().await,
+            (Method::GET, "/models") => handle_models().await,
+            (Method::GET, p) if p.starts_with("/v1/models/") => handle_model_by_id(p).await,
+            (Method::GET, p) if p.starts_with("/models/") => handle_model_by_id(p).await,
             (Method::POST, "/v1/models/detect") => handle_model_detect(req, &request_id).await,
+            (Method::POST, "/models/detect") => handle_model_detect(req, &request_id).await,
 
             // Stats API
             (Method::GET, "/stats") | (Method::GET, "/v1/stats") => handle_stats(&state).await,
@@ -840,6 +871,199 @@ async fn execute_messages_request(
     result
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(untagged)]
+enum LegacyPrompt {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+impl LegacyPrompt {
+    fn into_text(self) -> String {
+        match self {
+            LegacyPrompt::Single(text) => text,
+            LegacyPrompt::Multiple(parts) => parts.join("\n"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct LegacyCompletionRequest {
+    model: String,
+    prompt: LegacyPrompt,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop: Option<crate::format::openai::StopSequence>,
+    #[serde(default)]
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    n: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct LegacyCompletionResponse {
+    id: String,
+    object: String,
+    created: i64,
+    model: String,
+    choices: Vec<LegacyCompletionChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<LegacyCompletionUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct LegacyCompletionChoice {
+    text: String,
+    index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finish_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    logprobs: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct LegacyCompletionUsage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct LegacyCompletionStreamChunk {
+    id: String,
+    object: String,
+    created: i64,
+    model: String,
+    choices: Vec<LegacyCompletionChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<LegacyCompletionUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_fingerprint: Option<String>,
+}
+
+fn convert_chat_chunk_to_legacy_chunk(
+    chunk: crate::format::openai::ChatCompletionChunk,
+) -> LegacyCompletionStreamChunk {
+    LegacyCompletionStreamChunk {
+        id: chunk.id,
+        object: "text_completion.chunk".to_string(),
+        created: chunk.created,
+        model: chunk.model,
+        choices: chunk
+            .choices
+            .into_iter()
+            .map(|choice| LegacyCompletionChoice {
+                text: choice.delta.content.unwrap_or_default(),
+                index: choice.index,
+                finish_reason: choice.finish_reason,
+                logprobs: choice.logprobs,
+            })
+            .collect(),
+        usage: chunk.usage.map(|usage| LegacyCompletionUsage {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+        }),
+        system_fingerprint: chunk.system_fingerprint,
+    }
+}
+
+async fn adapt_chat_stream_to_legacy_completions(
+    response: Response<ResponseBody>,
+    request_id: &str,
+) -> Result<Response<ResponseBody>, Error> {
+    let (tx, body) = streaming_body();
+    let mut incoming = response.into_body();
+
+    tokio::spawn(async move {
+        use crate::format::openai::ChatCompletionChunk;
+        use http_body_util::BodyExt;
+
+        let mut buffer = String::new();
+
+        let emit_comment = |tx: &mpsc::Sender<Bytes>, event: &str| -> bool {
+            tx.try_send(Bytes::from(format!("{event}\n\n"))).is_ok()
+        };
+        let emit_data = |tx: &mpsc::Sender<Bytes>, payload: &str| -> bool {
+            tx.try_send(Bytes::from(format!("data: {payload}\n\n")))
+                .is_ok()
+        };
+
+        let process_event = |event: &str, tx: &mpsc::Sender<Bytes>| -> bool {
+            if event.trim().is_empty() {
+                return true;
+            }
+
+            // Pass through SSE comments (heartbeats) unchanged.
+            if event.lines().all(|line| line.starts_with(':')) {
+                return emit_comment(tx, event);
+            }
+
+            let data_payload = event
+                .lines()
+                .filter_map(|line| line.strip_prefix("data:"))
+                .map(|payload| payload.trim_start())
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            if data_payload.is_empty() {
+                return true;
+            }
+
+            if data_payload == "[DONE]" {
+                return emit_data(tx, "[DONE]");
+            }
+
+            let chat_chunk: ChatCompletionChunk = match serde_json::from_str(&data_payload) {
+                Ok(chunk) => chunk,
+                Err(_) => {
+                    // Unknown payload shape - forward as-is.
+                    return emit_data(tx, &data_payload);
+                }
+            };
+
+            let legacy_chunk = convert_chat_chunk_to_legacy_chunk(chat_chunk);
+            let payload = serde_json::to_string(&legacy_chunk).unwrap_or_default();
+            emit_data(tx, &payload)
+        };
+
+        while let Some(next_frame) = incoming.frame().await {
+            match next_frame {
+                Ok(frame) => {
+                    if let Ok(data) = frame.into_data() {
+                        buffer.push_str(&String::from_utf8_lossy(&data));
+                        while let Some(split_at) = buffer.find("\n\n") {
+                            let event = buffer[..split_at].to_string();
+                            buffer.drain(..split_at + 2);
+                            if !process_event(&event, &tx) {
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+
+        if !buffer.trim().is_empty() {
+            let _ = process_event(buffer.trim_end_matches('\n'), &tx);
+        }
+    });
+
+    Ok(sse_streaming_response(body, request_id))
+}
+
 async fn handle_chat_completions(
     req: Request<hyper::body::Incoming>,
     state: Arc<ServerState>,
@@ -872,6 +1096,180 @@ async fn handle_chat_completions(
         }
     };
 
+    handle_chat_completion_request(chat_request, state, request_id, "/v1/chat/completions").await
+}
+
+async fn handle_completions(
+    req: Request<hyper::body::Incoming>,
+    state: Arc<ServerState>,
+    request_id: &str,
+) -> Result<Response<ResponseBody>, Error> {
+    use crate::format::openai::{ChatCompletionResponse, ChatContent, ChatMessage};
+
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !content_type.contains("application/json") {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "Content-Type must be application/json",
+            "invalid_request_error",
+        ));
+    }
+
+    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let json_value: serde_json::Value = match serde_json::from_slice(&body_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid JSON: {}", e),
+                "invalid_request_error",
+            ));
+        }
+    };
+
+    // Support both legacy prompt payloads and chat-style messages payloads on
+    // `/v1/completions` for broad client compatibility.
+    if json_value.get("messages").is_some() {
+        let chat_request: ChatCompletionRequest = match serde_json::from_value(json_value) {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(openai_error_response(
+                    StatusCode::BAD_REQUEST,
+                    &format!("Invalid JSON: {}", e),
+                    "invalid_request_error",
+                ));
+            }
+        };
+        return handle_chat_completion_request(chat_request, state, request_id, "/v1/completions")
+            .await;
+    }
+
+    let legacy_request: LegacyCompletionRequest = match serde_json::from_value(json_value) {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid JSON: {}", e),
+                "invalid_request_error",
+            ));
+        }
+    };
+
+    if legacy_request.n.unwrap_or(1) > 1 {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "n > 1 is not supported",
+            "invalid_request_error",
+        ));
+    }
+
+    let prompt_text = legacy_request.prompt.into_text();
+    if prompt_text.trim().is_empty() {
+        return Ok(openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "prompt cannot be empty",
+            "invalid_request_error",
+        ));
+    }
+
+    let chat_request = ChatCompletionRequest {
+        model: legacy_request.model,
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: Some(ChatContent::Text(prompt_text)),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }],
+        max_tokens: legacy_request.max_tokens,
+        max_completion_tokens: legacy_request.max_completion_tokens,
+        temperature: legacy_request.temperature,
+        top_p: legacy_request.top_p,
+        stop: legacy_request.stop,
+        stream: legacy_request.stream,
+        tools: None,
+        tool_choice: None,
+        n: legacy_request.n,
+        user: legacy_request.user,
+        response_format: None,
+    };
+
+    let response =
+        handle_chat_completion_request(chat_request, state, request_id, "/v1/completions").await?;
+    if !response.status().is_success() {
+        return Ok(response);
+    }
+
+    if legacy_request.stream {
+        return adapt_chat_stream_to_legacy_completions(response, request_id).await;
+    }
+
+    let cache_status = response
+        .headers()
+        .get("x-cache-status")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let collected = match response.into_body().collect().await {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(openai_error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("Failed to read completion response: {}", e),
+                "api_error",
+            ));
+        }
+    };
+    let chat_response: ChatCompletionResponse = match serde_json::from_slice(&collected.to_bytes())
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(openai_error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("Failed to convert completion response: {}", e),
+                "api_error",
+            ));
+        }
+    };
+
+    let legacy_response = LegacyCompletionResponse {
+        id: chat_response.id,
+        object: "text_completion".to_string(),
+        created: chat_response.created,
+        model: chat_response.model,
+        choices: chat_response
+            .choices
+            .into_iter()
+            .map(|choice| LegacyCompletionChoice {
+                text: choice.message.content.unwrap_or_default(),
+                index: choice.index,
+                finish_reason: choice.finish_reason,
+                logprobs: choice.logprobs,
+            })
+            .collect(),
+        usage: chat_response.usage.map(|usage| LegacyCompletionUsage {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+        }),
+        system_fingerprint: chat_response.system_fingerprint,
+    };
+    let body = serde_json::to_vec(&legacy_response)?;
+
+    Ok(json_ok_response(body, request_id, cache_status.as_deref()))
+}
+
+async fn handle_chat_completion_request(
+    chat_request: ChatCompletionRequest,
+    state: Arc<ServerState>,
+    request_id: &str,
+    stats_route: &'static str,
+) -> Result<Response<ResponseBody>, Error> {
     // Check for unsupported n > 1
     if chat_request.n.unwrap_or(1) > 1 {
         return Ok(openai_error_response(
@@ -901,7 +1299,8 @@ async fn handle_chat_completions(
     validate_request(&messages_request)?;
 
     // Try the primary model first
-    let result = execute_openai_request(&messages_request, &state, request_id, false).await;
+    let result =
+        execute_openai_request(&messages_request, &state, request_id, false, stats_route).await;
 
     // Check if fallback is enabled and we got a quota exhaustion error
     if config.accounts.fallback
@@ -918,7 +1317,8 @@ async fn handle_chat_completions(
         let mut fallback_request = messages_request.clone();
         fallback_request.model = fallback_model.to_string();
 
-        return execute_openai_request(&fallback_request, &state, request_id, true).await;
+        return execute_openai_request(&fallback_request, &state, request_id, true, stats_route)
+            .await;
     }
 
     result
@@ -931,11 +1331,12 @@ async fn execute_openai_request(
     state: &Arc<ServerState>,
     request_id: &str,
     is_fallback: bool,
+    stats_route: &'static str,
 ) -> Result<Response<ResponseBody>, Error> {
     let is_streaming = messages_request.stream;
     let model = &messages_request.model;
 
-    get_stats().record_request(model, "/v1/chat/completions");
+    get_stats().record_request(model, stats_route);
 
     debug!(
         model = %model,
@@ -1278,34 +1679,51 @@ async fn handle_openai_streaming(
         };
 
         let mut incoming = upstream.into_body();
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(STREAM_HEARTBEAT_SECS));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let _ = tx.send(Bytes::from(": ping\n\n")).await;
+        heartbeat.tick().await;
+
+        let mut frame_timeout = Box::pin(tokio::time::sleep(Duration::from_secs(
+            STREAM_FRAME_TIMEOUT_SECS,
+        )));
 
         loop {
             use http_body_util::BodyExt;
-            let frame_timeout = Duration::from_secs(STREAM_FRAME_TIMEOUT_SECS);
-            match tokio::time::timeout(frame_timeout, incoming.frame()).await {
-                Ok(Some(Ok(frame))) => {
-                    if let Ok(data) = frame.into_data() {
-                        let chunk_str = String::from_utf8_lossy(&data);
-                        for event in parser.feed(&chunk_str) {
-                            process_event(
-                                &event,
-                                &tx,
-                                &mut input_tokens,
-                                &mut output_tokens,
-                                &mut sent_role,
-                                &mut tool_call_index,
-                            );
-                        }
-                    }
-                }
-                Ok(Some(Err(e))) => {
-                    warn!(error = %e, "Error reading upstream for OpenAI streaming");
-                    break;
-                }
-                Ok(None) => break,
-                Err(_) => {
+            tokio::select! {
+                _ = &mut frame_timeout => {
                     warn!("Upstream frame timeout in OpenAI streaming");
                     break;
+                }
+                _ = heartbeat.tick() => {
+                    if tx.send(Bytes::from(": ping\n\n")).await.is_err() {
+                        break;
+                    }
+                }
+                next_frame = incoming.frame() => {
+                    match next_frame {
+                        Some(Ok(frame)) => {
+                            frame_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(STREAM_FRAME_TIMEOUT_SECS));
+                            if let Ok(data) = frame.into_data() {
+                                let chunk_str = String::from_utf8_lossy(&data);
+                                for event in parser.feed(&chunk_str) {
+                                    process_event(
+                                        &event,
+                                        &tx,
+                                        &mut input_tokens,
+                                        &mut output_tokens,
+                                        &mut sent_role,
+                                        &mut tool_call_index,
+                                    );
+                                }
+                            }
+                        }
+                        Some(Err(e)) => {
+                            warn!(error = %e, "Error reading upstream for OpenAI streaming");
+                            break;
+                        }
+                        None => break,
+                    }
                 }
             }
         }
@@ -1760,42 +2178,60 @@ async fn handle_responses_streaming(
         };
 
         let mut incoming = upstream.into_body();
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(STREAM_HEARTBEAT_SECS));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let _ = tx.send(Bytes::from(": ping\n\n")).await;
+        heartbeat.tick().await;
+
+        let mut frame_timeout = Box::pin(tokio::time::sleep(Duration::from_secs(
+            STREAM_FRAME_TIMEOUT_SECS,
+        )));
+
         loop {
             use http_body_util::BodyExt;
-            let frame_timeout = Duration::from_secs(STREAM_FRAME_TIMEOUT_SECS);
-            match tokio::time::timeout(frame_timeout, incoming.frame()).await {
-                Ok(Some(Ok(frame))) => {
-                    if let Ok(data) = frame.into_data() {
-                        let chunk_str = String::from_utf8_lossy(&data);
-                        for event in parser.feed(&chunk_str) {
-                            process_event(
-                                &event,
-                                &tx,
-                                &mut input_tokens,
-                                &mut output_tokens,
-                                &mut cache_read_tokens,
-                                &mut reasoning_tokens,
-                                &mut text_content,
-                                &mut reasoning_content,
-                                &mut sent_initial,
-                                &mut message_added,
-                                &mut output_index,
-                                &mut tool_calls,
-                                &mut current_tool_json,
-                                &mut current_tool_id,
-                                &mut current_tool_name,
-                            );
-                        }
-                    }
-                }
-                Ok(Some(Err(e))) => {
-                    warn!(error = %e, "Error reading upstream for Responses streaming");
-                    break;
-                }
-                Ok(None) => break,
-                Err(_) => {
+            tokio::select! {
+                _ = &mut frame_timeout => {
                     warn!("Upstream frame timeout in Responses streaming");
                     break;
+                }
+                _ = heartbeat.tick() => {
+                    if tx.send(Bytes::from(": ping\n\n")).await.is_err() {
+                        break;
+                    }
+                }
+                next_frame = incoming.frame() => {
+                    match next_frame {
+                        Some(Ok(frame)) => {
+                            frame_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(STREAM_FRAME_TIMEOUT_SECS));
+                            if let Ok(data) = frame.into_data() {
+                                let chunk_str = String::from_utf8_lossy(&data);
+                                for event in parser.feed(&chunk_str) {
+                                    process_event(
+                                        &event,
+                                        &tx,
+                                        &mut input_tokens,
+                                        &mut output_tokens,
+                                        &mut cache_read_tokens,
+                                        &mut reasoning_tokens,
+                                        &mut text_content,
+                                        &mut reasoning_content,
+                                        &mut sent_initial,
+                                        &mut message_added,
+                                        &mut output_index,
+                                        &mut tool_calls,
+                                        &mut current_tool_json,
+                                        &mut current_tool_id,
+                                        &mut current_tool_name,
+                                    );
+                                }
+                            }
+                        }
+                        Some(Err(e)) => {
+                            warn!(error = %e, "Error reading upstream for Responses streaming");
+                            break;
+                        }
+                        None => break,
+                    }
                 }
             }
         }
@@ -2005,19 +2441,36 @@ fn error_response_for_path(
 }
 
 fn error_format_for_path(path: &str) -> ErrorFormat {
-    if path == "/v1/responses" {
-        ErrorFormat::Responses
-    } else if matches!(
+    if matches!(
         path,
-        "/v1/chat/completions"
-            | "/v1/completions"
-            | "/v1/models"
-            | "/v1/models/detect"
-            | "/v1/images/generations"
-            | "/v1/images/edits"
-            | "/v1/images/variations"
-            | "/v1/audio/transcriptions"
+        "/v1/responses"
+            | "/responses"
+            | "/v1/chat/completions/responses"
+            | "/chat/completions/responses"
     ) {
+        ErrorFormat::Responses
+    } else if path.starts_with("/v1/models/")
+        || path.starts_with("/models/")
+        || matches!(
+            path,
+            "/v1/chat/completions"
+                | "/chat/completions"
+                | "/v1/completions"
+                | "/completions"
+                | "/v1/models"
+                | "/models"
+                | "/v1/models/detect"
+                | "/models/detect"
+                | "/v1/images/generations"
+                | "/images/generations"
+                | "/v1/images/edits"
+                | "/images/edits"
+                | "/v1/images/variations"
+                | "/images/variations"
+                | "/v1/audio/transcriptions"
+                | "/audio/transcriptions"
+        )
+    {
         ErrorFormat::OpenAI
     } else {
         ErrorFormat::Anthropic
@@ -2521,6 +2974,56 @@ async fn handle_models() -> Result<Response<ResponseBody>, Error> {
 
     let response = ModelsResponse { data: models };
     let body = serde_json::to_vec(&response)?;
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .body(full_body(Full::new(Bytes::from(body))))
+        .unwrap())
+}
+
+async fn handle_model_by_id(path: &str) -> Result<Response<ResponseBody>, Error> {
+    let model_id = if let Some(id) = path.strip_prefix("/v1/models/") {
+        id
+    } else if let Some(id) = path.strip_prefix("/models/") {
+        id
+    } else {
+        return Ok(openai_error_response(
+            StatusCode::NOT_FOUND,
+            "Model not found",
+            "invalid_request_error",
+        ));
+    };
+
+    if model_id.is_empty() {
+        return Ok(openai_error_response(
+            StatusCode::NOT_FOUND,
+            "Model not found",
+            "invalid_request_error",
+        ));
+    }
+
+    let canonical = resolve_model_alias(model_id);
+    let model = Model::all()
+        .iter()
+        .find(|m| m.anthropic_id() == canonical)
+        .or_else(|| Model::all().iter().find(|m| m.anthropic_id() == model_id));
+
+    let Some(model) = model else {
+        return Ok(openai_error_response(
+            StatusCode::NOT_FOUND,
+            &format!("No model found with id '{}'", model_id),
+            "invalid_request_error",
+        ));
+    };
+
+    let info = ModelInfo {
+        id: model.anthropic_id().to_string(),
+        model_type: "model".to_string(),
+        display_name: model.anthropic_id().to_string(),
+        created_at: "2025-01-01T00:00:00Z".to_string(),
+    };
+    let body = serde_json::to_vec(&info)?;
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -5079,6 +5582,124 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_models_endpoint_no_v1_alias() {
+        let addr = spawn_test_server().await;
+        let (status, body) = http_request(
+            addr,
+            "GET /models HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(
+            body.contains("claude-opus-4-6-thinking"),
+            "body should list Claude models: {body}"
+        );
+        assert!(
+            body.contains("gemini-3-flash"),
+            "body should list Gemini models: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_model_by_id_endpoint() {
+        let addr = spawn_test_server().await;
+        let (status, body) = http_request(
+            addr,
+            "GET /v1/models/gemini-3-flash HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(status, 200, "body: {body}");
+
+        let json: serde_json::Value =
+            serde_json::from_str(&body).expect("model lookup response should be valid JSON");
+        assert_eq!(
+            json["id"],
+            serde_json::Value::String("gemini-3-flash".to_string())
+        );
+        assert_eq!(json["type"], serde_json::Value::String("model".to_string()));
+        assert_eq!(
+            json["display_name"],
+            serde_json::Value::String("gemini-3-flash".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_model_by_id_endpoint_alias() {
+        let addr = spawn_test_server().await;
+        let (status, body) = http_request(
+            addr,
+            "GET /v1/models/flash HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(status, 200, "body: {body}");
+
+        let json: serde_json::Value =
+            serde_json::from_str(&body).expect("model alias lookup response should be valid JSON");
+        assert_eq!(
+            json["id"],
+            serde_json::Value::String("gemini-3-flash".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_model_by_id_endpoint_no_v1_alias() {
+        let addr = spawn_test_server().await;
+        let (status, body) = http_request(
+            addr,
+            "GET /models/flash HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(status, 200, "body: {body}");
+
+        let json: serde_json::Value =
+            serde_json::from_str(&body).expect("model alias lookup response should be valid JSON");
+        assert_eq!(
+            json["id"],
+            serde_json::Value::String("gemini-3-flash".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_model_by_id_not_found_openai_error_shape() {
+        let addr = spawn_test_server().await;
+        let (status, body) = http_request(
+            addr,
+            "GET /v1/models/does-not-exist HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(status, 404, "body: {body}");
+
+        let json: serde_json::Value =
+            serde_json::from_str(&body).expect("model not-found response should be valid JSON");
+        assert!(
+            json.get("error").is_some(),
+            "expected OpenAI error wrapper, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["type"],
+            serde_json::Value::String("invalid_request_error".to_string()),
+            "expected OpenAI invalid_request_error type, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["code"],
+            serde_json::Value::Null,
+            "expected OpenAI code=null, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["param"],
+            serde_json::Value::Null,
+            "expected OpenAI param=null, body: {body}"
+        );
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .map(|m| m.contains("No model found with id"))
+                .unwrap_or(false),
+            "expected informative model-not-found message, body: {body}"
+        );
+    }
+
     // -- 404 --
 
     #[tokio::test]
@@ -5216,6 +5837,288 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_openai_chat_completions_no_v1_alias_route() {
+        let addr = spawn_test_server().await;
+        let payload =
+            r#"{"model":"gemini-3-flash","messages":[{"role":"user","content":"hello"}]}"#;
+        let req = format!(
+            "POST /chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(
+            status, 401,
+            "expected auth failure with no accounts, proving route is wired"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&body).expect("OpenAI error response should be valid JSON");
+        assert!(
+            json.get("error").is_some(),
+            "expected OpenAI error wrapper, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["type"],
+            serde_json::Value::String("authentication_error".to_string()),
+            "expected OpenAI error type, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["code"],
+            serde_json::Value::Null,
+            "expected OpenAI code=null, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["param"],
+            serde_json::Value::Null,
+            "expected OpenAI param=null, body: {body}"
+        );
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .map(|m| m.contains("No enabled accounts available"))
+                .unwrap_or(false),
+            "expected informative authentication message, body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_legacy_completions_prompt_route() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"model":"gemini-3-flash","prompt":"hello from completions"}"#;
+        let req = format!(
+            "POST /v1/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(
+            status, 401,
+            "expected auth failure with no accounts, proving prompt-style completions payload is accepted"
+        );
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .expect("Legacy completions error response should be valid JSON");
+        assert!(
+            json.get("error").is_some(),
+            "expected OpenAI error wrapper, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["type"],
+            serde_json::Value::String("authentication_error".to_string()),
+            "expected OpenAI error type, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["code"],
+            serde_json::Value::Null,
+            "expected OpenAI code=null, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["param"],
+            serde_json::Value::Null,
+            "expected OpenAI param=null, body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_legacy_completions_prompt_empty_rejected() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"model":"gemini-3-flash","prompt":"   "}"#;
+        let req = format!(
+            "POST /v1/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 400, "body: {body}");
+        assert!(
+            body.contains("prompt cannot be empty"),
+            "expected prompt validation message, body: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_legacy_completions_prompt_stream_route() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"model":"gemini-3-flash","prompt":"hello","stream":true}"#;
+        let req = format!(
+            "POST /v1/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(
+            status, 401,
+            "expected auth failure with no accounts, proving prompt-style stream payload is accepted"
+        );
+        assert!(
+            body.contains("No enabled accounts available"),
+            "expected authentication error body, got: {body}"
+        );
+    }
+
+    #[test]
+    fn test_convert_chat_chunk_to_legacy_chunk_text_delta() {
+        let chat_chunk = crate::format::openai::ChatCompletionChunk {
+            id: "chatcmpl_abc".to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created: 1234,
+            model: "gemini-3-flash".to_string(),
+            choices: vec![crate::format::openai::ChunkChoice {
+                index: 0,
+                delta: crate::format::openai::ChunkDelta {
+                    role: Some("assistant".to_string()),
+                    content: Some("hello".to_string()),
+                    tool_calls: None,
+                },
+                finish_reason: None,
+                logprobs: None,
+            }],
+            usage: None,
+            system_fingerprint: None,
+        };
+
+        let legacy = convert_chat_chunk_to_legacy_chunk(chat_chunk);
+        assert_eq!(legacy.object, "text_completion.chunk");
+        assert_eq!(legacy.choices.len(), 1);
+        assert_eq!(legacy.choices[0].text, "hello");
+        assert_eq!(legacy.choices[0].index, 0);
+        assert!(legacy.choices[0].finish_reason.is_none());
+    }
+
+    #[test]
+    fn test_convert_chat_chunk_to_legacy_chunk_usage_and_finish_reason() {
+        let chat_chunk = crate::format::openai::ChatCompletionChunk {
+            id: "chatcmpl_xyz".to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created: 5678,
+            model: "claude-sonnet-4-6".to_string(),
+            choices: vec![crate::format::openai::ChunkChoice {
+                index: 0,
+                delta: crate::format::openai::ChunkDelta {
+                    role: None,
+                    content: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+                logprobs: None,
+            }],
+            usage: Some(crate::format::openai::ChatUsage {
+                prompt_tokens: 5,
+                completion_tokens: 7,
+                total_tokens: 12,
+            }),
+            system_fingerprint: Some("fp_test".to_string()),
+        };
+
+        let legacy = convert_chat_chunk_to_legacy_chunk(chat_chunk);
+        assert_eq!(legacy.object, "text_completion.chunk");
+        assert_eq!(legacy.choices[0].text, "");
+        assert_eq!(legacy.choices[0].finish_reason, Some("stop".to_string()));
+        assert_eq!(legacy.usage.as_ref().map(|u| u.total_tokens), Some(12));
+        assert_eq!(legacy.system_fingerprint.as_deref(), Some("fp_test"));
+    }
+
+    #[tokio::test]
+    async fn test_legacy_completions_stream_adapter_end_to_end() {
+        use crate::format::openai::{ChatCompletionChunk, ChatUsage, ChunkChoice, ChunkDelta};
+        use http_body_util::BodyExt;
+
+        let (tx, body) = streaming_body();
+        let upstream = sse_streaming_response(body, "req_chat_stream");
+
+        tokio::spawn(async move {
+            let first = ChatCompletionChunk {
+                id: "chatcmpl_stream".to_string(),
+                object: "chat.completion.chunk".to_string(),
+                created: 1700000000,
+                model: "gemini-3-flash".to_string(),
+                choices: vec![ChunkChoice {
+                    index: 0,
+                    delta: ChunkDelta {
+                        role: Some("assistant".to_string()),
+                        content: Some("hello".to_string()),
+                        tool_calls: None,
+                    },
+                    finish_reason: None,
+                    logprobs: None,
+                }],
+                usage: None,
+                system_fingerprint: None,
+            };
+            let second = ChatCompletionChunk {
+                id: "chatcmpl_stream".to_string(),
+                object: "chat.completion.chunk".to_string(),
+                created: 1700000000,
+                model: "gemini-3-flash".to_string(),
+                choices: vec![ChunkChoice {
+                    index: 0,
+                    delta: ChunkDelta {
+                        role: None,
+                        content: None,
+                        tool_calls: None,
+                    },
+                    finish_reason: Some("stop".to_string()),
+                    logprobs: None,
+                }],
+                usage: Some(ChatUsage {
+                    prompt_tokens: 3,
+                    completion_tokens: 2,
+                    total_tokens: 5,
+                }),
+                system_fingerprint: Some("fp_stream".to_string()),
+            };
+
+            let _ = tx
+                .send(Bytes::from(format!(
+                    "data: {}\n\n",
+                    serde_json::to_string(&first).unwrap_or_default()
+                )))
+                .await;
+            let _ = tx.send(Bytes::from(": ping\n\n")).await;
+            let _ = tx
+                .send(Bytes::from(format!(
+                    "data: {}\n\n",
+                    serde_json::to_string(&second).unwrap_or_default()
+                )))
+                .await;
+            let _ = tx.send(Bytes::from("data: [DONE]\n\n")).await;
+        });
+
+        let adapted = adapt_chat_stream_to_legacy_completions(upstream, "req_legacy_stream")
+            .await
+            .expect("adapter should build streaming response");
+
+        assert_eq!(adapted.status(), StatusCode::OK);
+        assert_eq!(
+            adapted
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream")
+        );
+
+        let collected = adapted
+            .into_body()
+            .collect()
+            .await
+            .expect("collect adapted stream");
+        let body = String::from_utf8_lossy(&collected.to_bytes()).to_string();
+
+        assert!(
+            body.contains(r#""object":"text_completion.chunk""#),
+            "expected legacy completion chunk object, body: {body}"
+        );
+        assert!(
+            !body.contains(r#""object":"chat.completion.chunk""#),
+            "should not leak chat chunk object shape, body: {body}"
+        );
+        assert!(body.contains(r#""text":"hello""#), "body: {body}");
+        assert!(body.contains(r#""finish_reason":"stop""#), "body: {body}");
+        assert!(body.contains(r#""total_tokens":5"#), "body: {body}");
+        assert!(body.contains(": ping"), "body: {body}");
+        assert!(body.contains("data: [DONE]"), "body: {body}");
+    }
+
+    #[tokio::test]
     async fn test_responses_route_uses_responses_error_shape() {
         let addr = spawn_test_server().await;
         let payload = r#"{"model":"gemini-3-flash","input":"hello"}"#;
@@ -5252,6 +6155,82 @@ mod tests {
         assert!(
             !body.contains(r#""request_id""#),
             "Responses API errors should not include Anthropic request_id body field: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_responses_alias_route_uses_responses_error_shape() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"model":"gemini-3-flash","input":"hello"}"#;
+        let req = format!(
+            "POST /v1/chat/completions/responses HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 401, "body: {body}");
+        let json: serde_json::Value =
+            serde_json::from_str(&body).expect("Responses alias error should be valid JSON");
+        assert!(
+            json.get("error").is_some(),
+            "expected Responses error wrapper, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["type"],
+            serde_json::Value::String("authentication_error".to_string()),
+            "expected Responses error type, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["code"],
+            serde_json::Value::String("authentication_error".to_string()),
+            "expected Responses code=type, body: {body}"
+        );
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .map(|m| m.contains("No enabled accounts available"))
+                .unwrap_or(false),
+            "expected informative authentication message, body: {body}"
+        );
+        assert!(
+            !body.contains(r#""request_id""#),
+            "Responses API errors should not include Anthropic request_id body field: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_responses_no_v1_alias_route_uses_responses_error_shape() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"model":"gemini-3-flash","input":"hello"}"#;
+        let req = format!(
+            "POST /responses HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 401, "body: {body}");
+        let json: serde_json::Value =
+            serde_json::from_str(&body).expect("Responses alias error should be valid JSON");
+        assert!(
+            json.get("error").is_some(),
+            "expected Responses error wrapper, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["type"],
+            serde_json::Value::String("authentication_error".to_string()),
+            "expected Responses error type, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["code"],
+            serde_json::Value::String("authentication_error".to_string()),
+            "expected Responses code=type, body: {body}"
+        );
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .map(|m| m.contains("No enabled accounts available"))
+                .unwrap_or(false),
+            "expected informative authentication message, body: {body}"
         );
     }
 
