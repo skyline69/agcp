@@ -1,4 +1,5 @@
 use crate::format::google::{CloudCodeResponse, GenerateContentResponse, Part};
+use crate::format::tool_call_shims::remap_tool_call_args;
 use crate::format::{
     ContentBlock, ContentDelta, ErrorData, MIN_SIGNATURE_LENGTH, MessageDeltaData,
     MessageDeltaUsage, MessageStart, ModelFamily, Role, StreamEvent, Usage,
@@ -445,6 +446,8 @@ impl SseParser {
                         } else {
                             fc.function_call.args.clone()
                         };
+                    let mut args_to_send = args_to_send;
+                    remap_tool_call_args(&fc.function_call.name, &mut args_to_send);
                     let args_json = serde_json::to_string(&args_to_send).unwrap_or_default();
                     events.push(StreamEvent::ContentBlockDelta {
                         index: self.block_index,
@@ -615,6 +618,40 @@ mod tests {
             .iter()
             .any(|e| matches!(e, StreamEvent::MessageDelta { .. }));
         assert!(has_message_delta);
+    }
+
+    #[test]
+    fn test_sse_parser_remaps_tool_call_args_for_claude_tools() {
+        let mut parser = SseParser::new("claude-sonnet-4-6-thinking");
+        let data = r#"data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"Grep","args":{"id":"call_1","query":"needle","paths":["src"]}}}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"cachedContentTokenCount":0}}}
+
+"#;
+
+        let events = parser.feed(data);
+        let input_json = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::ContentBlockDelta {
+                    delta: ContentDelta::InputJson { partial_json },
+                    ..
+                } => Some(partial_json.clone()),
+                _ => None,
+            })
+            .expect("expected tool input json delta");
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&input_json).expect("tool input delta should be JSON");
+        assert_eq!(
+            parsed.get("pattern").and_then(|v| v.as_str()),
+            Some("needle")
+        );
+        assert_eq!(parsed.get("path").and_then(|v| v.as_str()), Some("src"));
+        assert!(parsed.get("query").is_none(), "query should be remapped");
+        assert!(parsed.get("paths").is_none(), "paths should be remapped");
+        assert!(
+            parsed.get("id").is_none(),
+            "id should be stripped from args"
+        );
     }
 
     #[test]

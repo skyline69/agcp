@@ -7,6 +7,7 @@ pub mod responses_convert;
 pub mod signature_cache;
 pub mod to_anthropic;
 pub mod to_google;
+pub mod tool_call_shims;
 
 pub use anthropic::{
     ContentBlock, ContentDelta, ErrorData, MessageDeltaData, MessageDeltaUsage, MessageStart,

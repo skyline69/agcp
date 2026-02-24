@@ -5,6 +5,7 @@ use crate::format::google::{Candidate, GenerateContentResponse, Part, UsageMetad
 use crate::format::signature_cache::{
     MIN_SIGNATURE_LENGTH, ModelFamily, cache_thinking_signature, cache_tool_signature,
 };
+use crate::format::tool_call_shims::remap_tool_call_args;
 use crate::models::get_model_family;
 
 pub fn convert_response(
@@ -75,6 +76,8 @@ fn convert_part(part: &Part, model_family: ModelFamily) -> Option<ContentBlock> 
                 .id
                 .clone()
                 .unwrap_or_else(|| format!("toolu_{}", generate_id()));
+            let mut input = fc.function_call.args.clone();
+            remap_tool_call_args(&fc.function_call.name, &mut input);
 
             // Cache signature for tool ID if present
             if let Some(sig) = &fc.thought_signature
@@ -86,7 +89,7 @@ fn convert_part(part: &Part, model_family: ModelFamily) -> Option<ContentBlock> 
             Some(ContentBlock::ToolUse {
                 id,
                 name: fc.function_call.name.clone(),
-                input: fc.function_call.args.clone(),
+                input,
             })
         }
         Part::Thought(thought) => {
@@ -151,7 +154,7 @@ fn generate_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::google::{Content, TextPart};
+    use crate::format::google::{Content, FunctionCall, FunctionCallPart, TextPart};
 
     fn create_test_response(text: &str, finish_reason: Option<&str>) -> GenerateContentResponse {
         GenerateContentResponse {
@@ -251,6 +254,104 @@ mod tests {
 
         assert!(result.content.is_empty());
         assert_eq!(result.stop_reason, None);
+    }
+
+    #[test]
+    fn test_convert_function_call_remaps_grep_args() {
+        let response = GenerateContentResponse {
+            candidates: Some(vec![Candidate {
+                content: Some(Content {
+                    role: "model".to_string(),
+                    parts: vec![Part::FunctionCall(FunctionCallPart {
+                        function_call: FunctionCall {
+                            name: "Grep".to_string(),
+                            args: serde_json::json!({
+                                "id": "call_1",
+                                "query": "needle",
+                                "paths": ["src"]
+                            }),
+                            id: Some("call_1".to_string()),
+                        },
+                        thought_signature: None,
+                    })],
+                }),
+                finish_reason: Some("TOOL_CALL".to_string()),
+                safety_ratings: None,
+            }]),
+            usage_metadata: Some(UsageMetadata {
+                prompt_token_count: 12,
+                candidates_token_count: 4,
+                total_token_count: 16,
+                cached_content_token_count: 0,
+            }),
+            error: None,
+            prompt_feedback: None,
+        };
+
+        let result = convert_response(&response, "claude-sonnet-4-6-thinking", "req_tool_remap");
+        assert_eq!(result.content.len(), 1);
+
+        match &result.content[0] {
+            ContentBlock::ToolUse { input, .. } => {
+                assert_eq!(
+                    input.get("pattern").and_then(|v| v.as_str()),
+                    Some("needle")
+                );
+                assert_eq!(input.get("path").and_then(|v| v.as_str()), Some("src"));
+                assert!(input.get("query").is_none(), "query should be remapped");
+                assert!(input.get("paths").is_none(), "paths should be remapped");
+                assert!(
+                    input.get("id").is_none(),
+                    "id should be stripped from tool args"
+                );
+            }
+            other => panic!("expected tool_use block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_convert_function_call_remaps_read_path() {
+        let response = GenerateContentResponse {
+            candidates: Some(vec![Candidate {
+                content: Some(Content {
+                    role: "model".to_string(),
+                    parts: vec![Part::FunctionCall(FunctionCallPart {
+                        function_call: FunctionCall {
+                            name: "read".to_string(),
+                            args: serde_json::json!({
+                                "path": "README.md"
+                            }),
+                            id: None,
+                        },
+                        thought_signature: None,
+                    })],
+                }),
+                finish_reason: Some("TOOL_CALL".to_string()),
+                safety_ratings: None,
+            }]),
+            usage_metadata: Some(UsageMetadata {
+                prompt_token_count: 12,
+                candidates_token_count: 4,
+                total_token_count: 16,
+                cached_content_token_count: 0,
+            }),
+            error: None,
+            prompt_feedback: None,
+        };
+
+        let result = convert_response(&response, "claude-sonnet-4-6-thinking", "req_read_remap");
+        assert_eq!(result.content.len(), 1);
+
+        match &result.content[0] {
+            ContentBlock::ToolUse { input, .. } => {
+                assert_eq!(
+                    input.get("file_path").and_then(|v| v.as_str()),
+                    Some("README.md")
+                );
+                assert!(input.get("path").is_none(), "path should be remapped");
+            }
+            other => panic!("expected tool_use block, got {other:?}"),
+        }
     }
 
     #[test]
