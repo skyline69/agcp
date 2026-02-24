@@ -7,6 +7,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -49,6 +50,19 @@ const STREAM_FRAME_TIMEOUT_SECS: u64 = 300;
 /// Sized to allow the upstream parser to stay ahead of the client without
 /// unbounded memory growth.  Each item is a small SSE text frame.
 const STREAM_CHANNEL_BUFFER: usize = 64;
+
+/// Number of log lines sent immediately when a client connects to
+/// `/api/logs/stream`.
+const LOG_STREAM_TAIL_LINES: usize = 100;
+
+/// Poll interval for checking new log data while streaming.
+const LOG_STREAM_POLL_INTERVAL_MS: u64 = 500;
+
+/// SSE heartbeat cadence for `/api/logs/stream`.
+#[cfg(not(test))]
+const LOG_STREAM_HEARTBEAT_SECS: u64 = 15;
+#[cfg(test)]
+const LOG_STREAM_HEARTBEAT_SECS: u64 = 1;
 
 /// A streaming response body backed by an `mpsc` channel.
 ///
@@ -4486,26 +4500,131 @@ async fn handle_account_limits(state: &Arc<ServerState>) -> Result<Response<Resp
 }
 
 async fn handle_logs_stream() -> Result<Response<ResponseBody>, Error> {
-    // Get the log file path
-    let config_dir = std::env::var_os("HOME")
-        .map(|h| std::path::PathBuf::from(h).join(".config").join("agcp"))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let log_path = config_dir.join("agcp.log");
+    let log_path = logs_file_path();
+    let initial_lines = read_log_tail_lines(&log_path, LOG_STREAM_TAIL_LINES);
+    let (tx, body) = streaming_body();
 
-    // Read the last 100 lines from the log file efficiently (seek from end)
-    let lines = match std::fs::File::open(&log_path) {
+    tokio::spawn(async move {
+        // Send recent history first so clients render immediately.
+        for line in initial_lines {
+            let clean = strip_ansi_codes(&line);
+            if tx
+                .send(Bytes::from(format!("data: {clean}\n\n")))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+
+        let mut file_offset = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+        let mut trailing_partial = String::new();
+
+        let mut poll_interval =
+            tokio::time::interval(Duration::from_millis(LOG_STREAM_POLL_INTERVAL_MS));
+        poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let mut heartbeat_interval =
+            tokio::time::interval(Duration::from_secs(LOG_STREAM_HEARTBEAT_SECS));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Consume the immediate tick so heartbeats follow the configured cadence.
+        heartbeat_interval.tick().await;
+
+        loop {
+            tokio::select! {
+                _ = poll_interval.tick() => {
+                    let current_len = match std::fs::metadata(&log_path) {
+                        Ok(meta) => meta.len(),
+                        Err(_) => 0,
+                    };
+
+                    if current_len < file_offset {
+                        // Log file was rotated/truncated.
+                        file_offset = 0;
+                        trailing_partial.clear();
+                    }
+
+                    if current_len == file_offset {
+                        continue;
+                    }
+
+                    use std::io::{Read, Seek, SeekFrom};
+                    let mut file = match std::fs::File::open(&log_path) {
+                        Ok(file) => file,
+                        Err(_) => continue,
+                    };
+
+                    if file.seek(SeekFrom::Start(file_offset)).is_err() {
+                        continue;
+                    }
+
+                    let mut buf = Vec::new();
+                    if file.read_to_end(&mut buf).is_err() {
+                        continue;
+                    }
+
+                    file_offset = current_len;
+                    trailing_partial.push_str(&String::from_utf8_lossy(&buf));
+
+                    let mut chunks: Vec<&str> = trailing_partial.split('\n').collect();
+                    let mut next_partial = String::new();
+                    if !trailing_partial.ends_with('\n')
+                        && let Some(last) = chunks.pop()
+                    {
+                        next_partial = last.to_string();
+                    }
+
+                    for chunk in chunks {
+                        let line = strip_ansi_codes(chunk.trim_end_matches('\r'));
+                        if tx
+                            .send(Bytes::from(format!("data: {line}\n\n")))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+
+                    trailing_partial = next_partial;
+                }
+                _ = heartbeat_interval.tick() => {
+                    if tx.send(Bytes::from(": ping\n\n")).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .body(body)
+        .unwrap())
+}
+
+fn logs_file_path() -> PathBuf {
+    let config_dir = std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(".config").join("agcp"))
+        .unwrap_or_else(|| PathBuf::from("."));
+    config_dir.join("agcp.log")
+}
+
+fn read_log_tail_lines(log_path: &Path, tail_count: usize) -> Vec<String> {
+    match std::fs::File::open(log_path) {
         Ok(mut file) => {
             use std::io::{Read, Seek, SeekFrom};
             let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
             if file_len == 0 {
                 vec!["No log entries".to_string()]
             } else {
-                const TAIL_COUNT: usize = 100;
                 const CHUNK_SIZE: u64 = 64 * 1024;
                 let mut collected: Vec<String> = Vec::new();
                 let mut remaining = file_len;
 
-                while remaining > 0 && collected.len() < TAIL_COUNT + 1 {
+                while remaining > 0 && collected.len() < tail_count + 1 {
                     let chunk = remaining.min(CHUNK_SIZE);
                     let offset = remaining - chunk;
                     let _ = file.seek(SeekFrom::Start(offset));
@@ -4527,28 +4646,12 @@ async fn handle_logs_stream() -> Result<Response<ResponseBody>, Error> {
                     remaining = offset;
                 }
 
-                let start = collected.len().saturating_sub(TAIL_COUNT);
+                let start = collected.len().saturating_sub(tail_count);
                 collected[start..].to_vec()
             }
         }
         Err(_) => vec!["No log file available".to_string()],
-    };
-
-    // Format as SSE events
-    let mut body = String::new();
-    for line in lines {
-        // Strip ANSI codes for cleaner output
-        let clean_line = strip_ansi_codes(&line);
-        body.push_str(&format!("data: {}\n\n", clean_line));
     }
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "text/event-stream")
-        .header("Cache-Control", "no-cache")
-        .header("Connection", "keep-alive")
-        .body(full_body(Full::new(Bytes::from(body))))
-        .unwrap())
 }
 
 fn strip_ansi_codes(s: &str) -> String {
@@ -5042,6 +5145,25 @@ mod tests {
         .await;
         assert_eq!(status, 200, "body: {body}");
         assert!(body.contains(r#""status":"ok"#), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn test_logs_stream_endpoint_sends_sse_and_heartbeat() {
+        let addr = spawn_test_server().await;
+        let (status, body) = http_request(
+            addr,
+            "GET /api/logs/stream HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert_eq!(status, 200, "body: {body}");
+        assert!(
+            body.contains("data:"),
+            "expected SSE data frame, body: {body}"
+        );
+        assert!(
+            body.contains(": ping"),
+            "expected heartbeat ping, body: {body}"
+        );
     }
 
     #[tokio::test]
