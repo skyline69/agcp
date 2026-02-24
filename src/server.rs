@@ -185,9 +185,12 @@ async fn handle_request(
                 request_id = %request_id,
                 "Unauthorized request - invalid API key"
             );
-            return Ok(json_response(
+            return Ok(error_response_for_path(
                 StatusCode::UNAUTHORIZED,
-                r#"{"type":"error","error":{"type":"authentication_error","message":"Invalid or missing API key"}}"#,
+                "Invalid or missing API key",
+                "authentication_error",
+                &path,
+                &request_id,
             ));
         }
     }
@@ -308,9 +311,12 @@ async fn handle_request(
             }
 
             // 404 for everything else
-            _ => Ok(json_response(
+            _ => Ok(error_response_for_path(
                 StatusCode::NOT_FOUND,
-                r#"{"type":"error","error":{"type":"not_found","message":"Not found"}}"#,
+                "Not found",
+                "not_found",
+                &path,
+                &request_id,
             )),
         }
     })
@@ -369,7 +375,7 @@ async fn handle_request(
             Ok(resp)
         }
         Err(e) => {
-            let resp = error_to_response(&e, &request_id);
+            let resp = error_to_response(&e, &request_id, &path);
             warn!(
                 method = %method,
                 path = %path,
@@ -1904,19 +1910,34 @@ async fn handle_responses_streaming(
 /// Error response format
 #[derive(Clone, Copy)]
 enum ErrorFormat {
+    /// Anthropic format: type:error + error:{type,message} + request_id
+    Anthropic,
     /// OpenAI format: error.{message, type, param: null, code: null}
     OpenAI,
     /// Responses format: error.{message, type, code: type}
     Responses,
 }
 
-fn error_response(
-    status: StatusCode,
+fn error_response_body(
     message: &str,
     error_type: &str,
     format: ErrorFormat,
-) -> Response<ResponseBody> {
+    request_id: Option<&str>,
+) -> String {
     let body = match format {
+        ErrorFormat::Anthropic => {
+            let mut body = serde_json::json!({
+                "type": "error",
+                "error": {
+                    "type": error_type,
+                    "message": message
+                }
+            });
+            if let Some(req_id) = request_id {
+                body["request_id"] = serde_json::json!(req_id);
+            }
+            body
+        }
         ErrorFormat::OpenAI => serde_json::json!({
             "error": {
                 "message": message,
@@ -1932,14 +1953,61 @@ fn error_response(
                 "code": error_type
             }
         }),
-    }
-    .to_string();
+    };
+    body.to_string()
+}
+
+fn error_response(
+    status: StatusCode,
+    message: &str,
+    error_type: &str,
+    format: ErrorFormat,
+) -> Response<ResponseBody> {
+    let body = error_response_body(message, error_type, format, None);
 
     Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
         .body(full_body(Full::new(Bytes::from(body))))
         .expect("Response construction with valid headers should not fail")
+}
+
+fn error_response_for_path(
+    status: StatusCode,
+    message: &str,
+    error_type: &str,
+    path: &str,
+    request_id: &str,
+) -> Response<ResponseBody> {
+    let format = error_format_for_path(path);
+    let body = error_response_body(message, error_type, format, Some(request_id));
+
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .header("X-Request-Id", request_id)
+        .body(full_body(Full::new(Bytes::from(body))))
+        .expect("Response construction with valid headers should not fail")
+}
+
+fn error_format_for_path(path: &str) -> ErrorFormat {
+    if path == "/v1/responses" {
+        ErrorFormat::Responses
+    } else if matches!(
+        path,
+        "/v1/chat/completions"
+            | "/v1/completions"
+            | "/v1/models"
+            | "/v1/models/detect"
+            | "/v1/images/generations"
+            | "/v1/images/edits"
+            | "/v1/images/variations"
+            | "/v1/audio/transcriptions"
+    ) {
+        ErrorFormat::OpenAI
+    } else {
+        ErrorFormat::Anthropic
+    }
 }
 
 fn responses_error_response(
@@ -4674,8 +4742,8 @@ fn sse_ok_response(body: String, request_id: &str) -> Response<ResponseBody> {
         .unwrap()
 }
 
-fn error_to_response(error: &Error, request_id: &str) -> Response<ResponseBody> {
-    let (status, error_type, message) = match error {
+fn map_error(error: &Error) -> (StatusCode, &'static str, String) {
+    match error {
         Error::Auth(AuthError::TokenExpired) => (
             StatusCode::UNAUTHORIZED,
             "authentication_error",
@@ -4737,7 +4805,11 @@ fn error_to_response(error: &Error, request_id: &str) -> Response<ResponseBody> 
             "timeout_error",
             format!("Request timed out after {:?}", d),
         ),
-    };
+    }
+}
+
+fn error_to_response(error: &Error, request_id: &str, path: &str) -> Response<ResponseBody> {
+    let (status, error_type, message) = map_error(error);
 
     // Add suggestion if available
     let message_with_suggestion = if let Some(suggestion) = error.suggestion() {
@@ -4746,22 +4818,13 @@ fn error_to_response(error: &Error, request_id: &str) -> Response<ResponseBody> 
         message
     };
 
-    let body = serde_json::json!({
-        "type": "error",
-        "error": {
-            "type": error_type,
-            "message": message_with_suggestion
-        },
-        "request_id": request_id
-    })
-    .to_string();
-
-    Response::builder()
-        .status(status)
-        .header("Content-Type", "application/json")
-        .header("X-Request-Id", request_id)
-        .body(full_body(Full::new(Bytes::from(body))))
-        .unwrap()
+    error_response_for_path(
+        status,
+        &message_with_suggestion,
+        error_type,
+        path,
+        request_id,
+    )
 }
 
 #[cfg(test)]
@@ -4991,10 +5054,41 @@ mod tests {
             payload.len(),
             payload
         );
-        let (status, _body) = http_request(addr, &req).await;
+        let (status, body) = http_request(addr, &req).await;
         assert_eq!(
             status, 401,
             "expected auth failure with no accounts, proving route is wired"
+        );
+        assert!(
+            body.contains(r#""error":{"message":"#)
+                && body.contains(r#""type":"authentication_error""#),
+            "expected OpenAI error shape, body: {body}"
+        );
+        assert!(
+            !body.contains(r#""request_id""#),
+            "OpenAI errors should not include Anthropic request_id body field: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_responses_route_uses_responses_error_shape() {
+        let addr = spawn_test_server().await;
+        let payload = r#"{"model":"gemini-3-flash","input":"hello"}"#;
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            payload.len(),
+            payload
+        );
+        let (status, body) = http_request(addr, &req).await;
+        assert_eq!(status, 401, "body: {body}");
+        assert!(
+            body.contains(r#""error":{"message":"#)
+                && body.contains(r#""code":"authentication_error""#),
+            "expected Responses API error shape, body: {body}"
+        );
+        assert!(
+            !body.contains(r#""request_id""#),
+            "Responses API errors should not include Anthropic request_id body field: {body}"
         );
     }
 
@@ -5432,10 +5526,16 @@ mod tests {
             "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{payload}",
             payload.len()
         );
-        let (status, _body) = http_request(addr, &req).await;
+        let (status, body) = http_request(addr, &req).await;
         assert_eq!(
             status, 401,
             "expected auth/account failure for non-warmup messages with no accounts"
+        );
+        assert!(
+            body.contains(r#""type":"error""#)
+                && body.contains(r#""type":"authentication_error""#)
+                && body.contains(r#""request_id""#),
+            "expected Anthropic error shape, body: {body}"
         );
     }
 }
