@@ -5059,10 +5059,33 @@ mod tests {
             status, 401,
             "expected auth failure with no accounts, proving route is wired"
         );
+        let json: serde_json::Value =
+            serde_json::from_str(&body).expect("OpenAI error response should be valid JSON");
         assert!(
-            body.contains(r#""error":{"message":"#)
-                && body.contains(r#""type":"authentication_error""#),
-            "expected OpenAI error shape, body: {body}"
+            json.get("error").is_some(),
+            "expected OpenAI error wrapper, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["type"],
+            serde_json::Value::String("authentication_error".to_string()),
+            "expected OpenAI error type, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["code"],
+            serde_json::Value::Null,
+            "expected OpenAI code=null, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["param"],
+            serde_json::Value::Null,
+            "expected OpenAI param=null, body: {body}"
+        );
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .map(|m| m.contains("No enabled accounts available"))
+                .unwrap_or(false),
+            "expected informative authentication message, body: {body}"
         );
         assert!(
             !body.contains(r#""request_id""#),
@@ -5081,10 +5104,28 @@ mod tests {
         );
         let (status, body) = http_request(addr, &req).await;
         assert_eq!(status, 401, "body: {body}");
+        let json: serde_json::Value =
+            serde_json::from_str(&body).expect("Responses error response should be valid JSON");
         assert!(
-            body.contains(r#""error":{"message":"#)
-                && body.contains(r#""code":"authentication_error""#),
-            "expected Responses API error shape, body: {body}"
+            json.get("error").is_some(),
+            "expected Responses error wrapper, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["type"],
+            serde_json::Value::String("authentication_error".to_string()),
+            "expected Responses error type, body: {body}"
+        );
+        assert_eq!(
+            json["error"]["code"],
+            serde_json::Value::String("authentication_error".to_string()),
+            "expected Responses code=type, body: {body}"
+        );
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .map(|m| m.contains("No enabled accounts available"))
+                .unwrap_or(false),
+            "expected informative authentication message, body: {body}"
         );
         assert!(
             !body.contains(r#""request_id""#),
