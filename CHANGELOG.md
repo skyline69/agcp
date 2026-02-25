@@ -3,6 +3,43 @@
 All notable changes to this project will be documented in this file.
 
 
+## [v1.3.1] - 2026-02-25
+
+
+### Bug Fixes
+
+- Clippy warnings ([0cb21e1](https://github.com/skyline69/agcp/commit/0cb21e1c0bdf1c55869864bffd37b163abbde46f)) — Ö. Efe D.
+- Remove line wrapping in logs view to fix text selection ([10a7249](https://github.com/skyline69/agcp/commit/10a7249da18245ed9c366d8dea6a352e51bf9214)) — Ö. Efe D.
+
+
+### Features
+
+- Expand OpenAI client compatibility ([a594e04](https://github.com/skyline69/agcp/commit/a594e047694a5a1dedc59d19ea1ea7eba9774044)) — Ö. Efe D.
+- Redesign usage chart with rate + cumulative dual view ([200757d](https://github.com/skyline69/agcp/commit/200757d9374e633eac42b86ec46ee84e0ee117fa)) — Ö. Efe D.
+
+
+### Miscellaneous
+
+- Make error-shape assertions JSON-structural ([62b466e](https://github.com/skyline69/agcp/commit/62b466e3657512736d23d66f586e0abff270d520)) — Ö. Efe D.
+- Update version ([3dfa245](https://github.com/skyline69/agcp/commit/3dfa245132d51497ba84cf95ef29c223e80116b5)) — Ö. Efe D.
+
+
+### cloudcode
+
+- Parse structured Google error details for 429 backoff ([d6f2918](https://github.com/skyline69/agcp/commit/d6f2918327ef54d34b112386c19fe3f54670cb91)) — Ö. Efe D.
+
+
+### format
+
+- Remap Grep/Glob/Read tool-call args for Claude clients ([78ce01c](https://github.com/skyline69/agcp/commit/78ce01c6fc81eae47b24ddff2f6f16d4c80757cc)) — Ö. Efe D.
+
+
+### server
+
+- Return endpoint-native error shapes on fallback ([bdee0fd](https://github.com/skyline69/agcp/commit/bdee0fd20e96e5a69bbf21fed62668bbd5a09936)) — Ö. Efe D.
+- Make /api/logs/stream a live SSE feed with heartbeat ([24aeed8](https://github.com/skyline69/agcp/commit/24aeed829602f4335f8dd490afc2d4a8215161fd)) — Ö. Efe D.
+
+
 ## [v1.3.0] - 2026-02-22
 
 
