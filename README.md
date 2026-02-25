@@ -236,6 +236,7 @@ port = 8080
 host = "127.0.0.1"
 # api_key = "your-optional-api-key"
 request_timeout_secs = 300       # Per-request timeout (default: 5 minutes)
+max_request_size_bytes = 104857600  # Max request body size (default: 100 MiB)
 warmup_intercept_enabled = true  # Intercept warmup pings on /v1/messages
 warmup_intercept_max_text_len = 100
 

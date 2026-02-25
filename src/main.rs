@@ -1178,6 +1178,10 @@ fn run_config_command() {
         CYAN, config.server.warmup_intercept_enabled, RESET
     );
     println!(
+        "    max_request_size_bytes = {}{}{}",
+        CYAN, config.server.max_request_size_bytes, RESET
+    );
+    println!(
         "    warmup_intercept_max_text_len = {}{}{}",
         CYAN, config.server.warmup_intercept_max_text_len, RESET
     );

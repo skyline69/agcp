@@ -113,6 +113,9 @@ pub struct ServerConfig {
     /// Request timeout in seconds (default: 300 = 5 minutes)
     #[serde(default = "default_request_timeout")]
     pub request_timeout_secs: u64,
+    /// Maximum request body size in bytes (default: 100 MiB)
+    #[serde(default = "default_max_request_size_bytes")]
+    pub max_request_size_bytes: usize,
     /// Enable warmup request interception on Anthropic message endpoints.
     #[serde(default = "default_warmup_intercept_enabled")]
     pub warmup_intercept_enabled: bool,
@@ -350,6 +353,10 @@ fn default_request_timeout() -> u64 {
     300
 }
 
+fn default_max_request_size_bytes() -> usize {
+    100 * 1024 * 1024
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -357,6 +364,7 @@ impl Default for ServerConfig {
             host: default_host(),
             api_key: None,
             request_timeout_secs: default_request_timeout(),
+            max_request_size_bytes: default_max_request_size_bytes(),
             warmup_intercept_enabled: default_warmup_intercept_enabled(),
             warmup_intercept_max_text_len: default_warmup_intercept_max_text_len(),
         }
@@ -433,6 +441,16 @@ impl Config {
                     field: "server.warmup_intercept_max_text_len".to_string(),
                     value: config.server.warmup_intercept_max_text_len.to_string(),
                     valid_values: vec!["1 to 4096".to_string()],
+                });
+            }
+
+            // Validate request body size limit
+            if config.server.max_request_size_bytes == 0 {
+                return Err(ConfigError::InvalidValue {
+                    path,
+                    field: "server.max_request_size_bytes".to_string(),
+                    value: config.server.max_request_size_bytes.to_string(),
+                    valid_values: vec![">= 1".to_string()],
                 });
             }
 
@@ -576,6 +594,7 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.max_request_size_bytes, 100 * 1024 * 1024);
         assert!(config.server.warmup_intercept_enabled);
         assert_eq!(config.server.warmup_intercept_max_text_len, 100);
         assert!(!config.logging.debug);

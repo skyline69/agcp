@@ -18,6 +18,10 @@ host = "127.0.0.1"
 # Per-request timeout in seconds (covers the full round-trip to Cloud Code)
 request_timeout_secs = 300
 
+# Maximum request body size in bytes (default: 100 MiB).
+# Applies to JSON and multipart endpoints (images/audio included).
+max_request_size_bytes = 104857600
+
 # Intercept Claude Code-style warmup requests on /v1/messages and /messages
 # and respond locally without consuming upstream quota.
 warmup_intercept_enabled = true

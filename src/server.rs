@@ -39,9 +39,6 @@ use crate::models::{
 };
 use crate::stats::get_stats;
 
-/// Maximum request body size (10 MB).
-const MAX_REQUEST_SIZE: usize = 10 * 1024 * 1024;
-
 /// Maximum time to wait for a single upstream frame before considering the
 /// stream stalled (seconds).
 const STREAM_FRAME_TIMEOUT_SECS: u64 = 300;
@@ -111,6 +108,10 @@ fn full_body(body: Full<Bytes>) -> ResponseBody {
 fn streaming_body() -> (mpsc::Sender<Bytes>, ResponseBody) {
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_BUFFER);
     (tx, Either::Right(ChannelBody::new(rx)))
+}
+
+fn max_request_size() -> usize {
+    get_config().server.max_request_size_bytes
 }
 
 /// Shared server state passed to all request handlers.
@@ -673,18 +674,20 @@ async fn handle_messages(
         }));
     }
 
+    let max_request_size = max_request_size();
+
     if let Some(len) = req.headers().get("content-length")
         && let Ok(len_str) = len.to_str()
         && let Ok(len) = len_str.parse::<usize>()
-        && len > MAX_REQUEST_SIZE
+        && len > max_request_size
     {
         return Err(Error::Api(ApiError::RequestTooLarge {
             size: len,
-            max: MAX_REQUEST_SIZE,
+            max: max_request_size,
         }));
     }
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size).await?;
 
     let mut messages_request: MessagesRequest = serde_json::from_slice(&body_bytes)?;
 
@@ -1083,7 +1086,7 @@ async fn handle_chat_completions(
         ));
     }
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
 
     let chat_request: ChatCompletionRequest = match serde_json::from_slice(&body_bytes) {
         Ok(r) => r,
@@ -1120,7 +1123,7 @@ async fn handle_completions(
         ));
     }
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
     let json_value: serde_json::Value = match serde_json::from_slice(&body_bytes) {
         Ok(v) => v,
         Err(e) => {
@@ -1769,7 +1772,7 @@ async fn handle_responses(
         ));
     }
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
 
     let responses_request: crate::format::ResponsesRequest =
         match serde_json::from_slice(&body_bytes) {
@@ -3069,7 +3072,7 @@ async fn handle_model_detect(
         ));
     }
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
     let request: ModelDetectRequest = match serde_json::from_slice(&body_bytes) {
         Ok(parsed) => parsed,
         Err(e) => {
@@ -3130,7 +3133,7 @@ async fn handle_model_detect(
 async fn handle_count_tokens(
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<ResponseBody>, Error> {
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
 
     #[derive(serde::Deserialize)]
     struct CountTokensRequest {
@@ -3353,7 +3356,7 @@ async fn handle_gemini_count_tokens(
         ));
     }
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
     let payload: serde_json::Value = serde_json::from_slice(&body_bytes)?;
     let total_tokens = estimate_gemini_tokens(&payload);
 
@@ -3422,7 +3425,7 @@ async fn handle_gemini_generate_content(
         ));
     }
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
     let request: GoogleGenerateContentRequest = serde_json::from_slice(&body_bytes)?;
 
     get_stats().record_request(&model, "/v1beta/models/:generateContent");
@@ -3508,7 +3511,7 @@ async fn handle_gemini_stream_generate_content(
         ));
     }
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
     let request: GoogleGenerateContentRequest = serde_json::from_slice(&body_bytes)?;
 
     get_stats().record_request(&model, "/v1beta/models/:streamGenerateContent");
@@ -3599,7 +3602,7 @@ async fn handle_internal_warmup(
         ));
     }
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
     let warmup_request = if body_bytes.is_empty() {
         WarmupRequest {
             model: None,
@@ -4016,7 +4019,7 @@ async fn handle_audio_transcriptions(
         ));
     };
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
     let multipart = parse_multipart_form_data(&body_bytes, &boundary)?;
     let Some(file) = multipart.file else {
         return Ok(openai_error_response(
@@ -4444,7 +4447,7 @@ async fn handle_images_edit_like(
         ));
     };
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
     let multipart = parse_multipart_form_data(&body_bytes, &boundary)?;
 
     let Some(primary_image) = select_primary_image(&multipart) else {
@@ -4662,7 +4665,7 @@ async fn handle_images_generations(
         ));
     }
 
-    let body_bytes = read_body_limited(req.into_body(), MAX_REQUEST_SIZE).await?;
+    let body_bytes = read_body_limited(req.into_body(), max_request_size()).await?;
     let request: ImagesGenerationsRequest = match serde_json::from_slice(&body_bytes) {
         Ok(parsed) => parsed,
         Err(e) => {
