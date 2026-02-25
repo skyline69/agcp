@@ -1,8 +1,6 @@
 use ratatui::prelude::*;
 use ratatui::symbols::Marker;
-use ratatui::widgets::{
-    Axis, Block, BorderType, Borders, Chart, Dataset, GraphType, LegendPosition, Paragraph,
-};
+use ratatui::widgets::{Axis, Block, BorderType, Borders, Chart, Dataset, GraphType, Paragraph};
 
 use crate::tui::app::App;
 use crate::tui::theme;
@@ -35,15 +33,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // Layout: top summary row + time-series chart
+    // Layout: summary + rate chart + cumulative chart
     let layout = Layout::vertical([
-        Constraint::Length(5), // Summary panel
-        Constraint::Fill(1),   // Cumulative token chart
+        Constraint::Length(5),      // Summary panel
+        Constraint::Percentage(40), // Token rate chart
+        Constraint::Percentage(60), // Cumulative token chart
     ])
     .split(area);
 
     render_summary(frame, layout[0], app);
-    render_cumulative_chart(frame, layout[1], app);
+    render_rate_chart(frame, layout[1], app);
+    render_cumulative_chart(frame, layout[2], app);
 }
 
 /// Render when no token data is available
@@ -162,12 +162,114 @@ fn render_summary(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), text_area);
 }
 
+/// Render the token rate chart (tokens per minute) with one line per model
+fn render_rate_chart(frame: &mut Frame, area: Rect, app: &App) {
+    let mut series = app.token_history.get_rate_series();
+
+    if series.is_empty() {
+        let block = Block::default()
+            .title(" Token Rate ")
+            .title_style(theme::primary())
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(theme::border())
+            .style(Style::default().bg(theme::SURFACE));
+
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+
+        let msg =
+            Paragraph::new("Collecting data... chart will appear after the first poll interval.")
+                .style(theme::dim());
+        frame.render_widget(msg, inner);
+        return;
+    }
+
+    // Sort models by peak rate (highest first) for legend ordering
+    series.sort_by(|a, b| {
+        let a_max = a.1.iter().map(|(_, y)| *y).fold(0.0f64, f64::max);
+        let b_max = b.1.iter().map(|(_, y)| *y).fold(0.0f64, f64::max);
+        b_max
+            .partial_cmp(&a_max)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Find max Y across all series
+    let max_y = series
+        .iter()
+        .flat_map(|(_, pts)| pts.iter().map(|(_, y)| *y))
+        .fold(0.0f64, f64::max);
+
+    // Time range in minutes (data-bounded, with padding)
+    let time_range = app.token_history.get_time_range_minutes();
+    let x_bound = time_range.max(1.0);
+
+    // Choose marker based on data density
+    let point_count = app.token_history.session_point_count();
+    let marker = if point_count > 10 {
+        Marker::Braille
+    } else {
+        Marker::Dot
+    };
+
+    // Build datasets
+    let datasets: Vec<Dataset> = series
+        .iter()
+        .enumerate()
+        .map(|(i, (name, points))| {
+            let color = MODEL_COLORS[i % MODEL_COLORS.len()];
+            Dataset::default()
+                .name(shorten_model_name(name))
+                .marker(marker)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(color))
+                .data(points)
+        })
+        .collect();
+
+    // X axis: time in minutes
+    let x_labels = build_time_labels(x_bound);
+    let x_axis = Axis::default()
+        .style(theme::dim())
+        .bounds([0.0, x_bound])
+        .labels(x_labels);
+
+    // Y axis: tokens per minute
+    let y_bound = if max_y <= 100.0 {
+        (max_y * 1.2).max(10.0)
+    } else {
+        max_y * 1.1
+    };
+
+    let y_labels = build_y_labels(y_bound);
+    let y_axis = Axis::default()
+        .title(Span::styled("tok/min", theme::dim()))
+        .style(theme::dim())
+        .bounds([0.0, y_bound])
+        .labels(y_labels);
+
+    let chart = Chart::new(datasets)
+        .block(
+            Block::default()
+                .title(" Token Rate ")
+                .title_style(theme::primary())
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(theme::border())
+                .style(Style::default().bg(theme::SURFACE)),
+        )
+        .x_axis(x_axis)
+        .y_axis(y_axis)
+        .style(Style::default().bg(theme::SURFACE));
+
+    frame.render_widget(chart, area);
+}
+
 /// Render the cumulative token usage chart with one line per model
 fn render_cumulative_chart(frame: &mut Frame, area: Rect, app: &App) {
     let mut series = app.token_history.get_cumulative_series();
 
     if series.is_empty() {
-        // Not enough data points yet
         let block = Block::default()
             .title(" Cumulative Token Usage ")
             .title_style(theme::primary())
@@ -195,15 +297,30 @@ fn render_cumulative_chart(frame: &mut Frame, area: Rect, app: &App) {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    // Ensure every model series starts at x=0 so lines originate from the left edge.
+    for (_name, points) in &mut series {
+        if points.first().map(|(x, _)| *x > 0.0).unwrap_or(true) {
+            points.insert(0, (0.0, 0.0));
+        }
+    }
+
     // Find max Y across all series
     let max_y = series
         .iter()
         .flat_map(|(_, pts)| pts.iter().map(|(_, y)| *y))
         .fold(0.0f64, f64::max);
 
-    // Time range in minutes
+    // Time range in minutes (data-bounded, with padding)
     let time_range = app.token_history.get_time_range_minutes();
     let x_bound = time_range.max(1.0);
+
+    // Choose marker based on data density
+    let point_count = app.token_history.session_point_count();
+    let marker = if point_count > 10 {
+        Marker::Braille
+    } else {
+        Marker::Dot
+    };
 
     // Build datasets
     let datasets: Vec<Dataset> = series
@@ -213,7 +330,7 @@ fn render_cumulative_chart(frame: &mut Frame, area: Rect, app: &App) {
             let color = MODEL_COLORS[i % MODEL_COLORS.len()];
             Dataset::default()
                 .name(shorten_model_name(name))
-                .marker(Marker::Braille)
+                .marker(marker)
                 .graph_type(GraphType::Line)
                 .style(Style::default().fg(color))
                 .data(points)
@@ -241,11 +358,24 @@ fn render_cumulative_chart(frame: &mut Frame, area: Rect, app: &App) {
         .bounds([0.0, y_bound])
         .labels(y_labels);
 
+    // Build an inline legend in the block title since ratatui hides
+    // the built-in legend when it overlaps with data points.
+    let mut title_spans: Vec<Span> =
+        vec![Span::styled(" Cumulative Token Usage ", theme::primary())];
+    for (i, (name, _)) in series.iter().enumerate() {
+        let color = MODEL_COLORS[i % MODEL_COLORS.len()];
+        title_spans.push(Span::styled(" ■ ", Style::default().fg(color)));
+        title_spans.push(Span::styled(
+            shorten_model_name(name),
+            Style::default().fg(color),
+        ));
+    }
+    title_spans.push(Span::raw(" "));
+
     let chart = Chart::new(datasets)
         .block(
             Block::default()
-                .title(" Cumulative Token Usage ")
-                .title_style(theme::primary())
+                .title(Line::from(title_spans))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(theme::border())
@@ -253,7 +383,7 @@ fn render_cumulative_chart(frame: &mut Frame, area: Rect, app: &App) {
         )
         .x_axis(x_axis)
         .y_axis(y_axis)
-        .legend_position(Some(LegendPosition::TopRight))
+        .legend_position(None)
         .style(Style::default().bg(theme::SURFACE));
 
     frame.render_widget(chart, area);

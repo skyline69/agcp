@@ -573,8 +573,12 @@ pub struct TokenStats {
 }
 
 /// Maximum number of data points to keep in the token history
-/// With change-only recording, this covers many hours of active use
+/// With regular recording, ~10s interval = 360 points/hour
 const TOKEN_HISTORY_MAX_POINTS: usize = 5000;
+
+/// Minimum interval between idle (unchanged) snapshots in seconds.
+/// Active changes are always recorded immediately.
+const IDLE_SNAPSHOT_INTERVAL_SECS: u64 = 10;
 
 /// A single timestamped snapshot of cumulative token usage
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -723,7 +727,8 @@ impl TokenHistory {
             })
             .collect();
 
-        // Skip if values haven't changed since the last snapshot (idle period)
+        // Record idle snapshots at a throttled rate so rate-chart
+        // calculations have continuous data points even during idle.
         if let Some(last) = self.snapshots.last() {
             let unchanged = models.len() == last.models.len()
                 && models.iter().all(|(name, val)| {
@@ -733,7 +738,7 @@ impl TokenHistory {
                         .map(|(_, t)| t == val)
                         .unwrap_or(false)
                 });
-            if unchanged {
+            if unchanged && now.saturating_sub(last.timestamp) < IDLE_SNAPSHOT_INTERVAL_SECS {
                 return false;
             }
         }
@@ -854,17 +859,107 @@ impl TokenHistory {
     }
 
     /// Get the time range in minutes for the X axis.
-    /// Scoped to the current TUI session so the chart doesn't stretch across
-    /// days of persisted history.
+    /// Uses the last data point (plus 10% padding) instead of wall-clock time
+    /// so the chart fills with data rather than stretching into empty space.
     pub fn get_time_range_minutes(&self) -> f64 {
         let origin = self
             .session_start
             .unwrap_or_else(|| self.snapshots.first().map(|s| s.timestamp).unwrap_or(0));
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let range = (now.saturating_sub(origin)) as f64 / 60.0;
-        range.max(1.0)
+
+        // Use the last snapshot timestamp instead of `now` so the X-axis
+        // stays tight around actual data points.
+        let last_ts = self.snapshots.last().map(|s| s.timestamp).unwrap_or(origin);
+        let data_range = (last_ts.saturating_sub(origin)) as f64 / 60.0;
+
+        // Add 10% right-side padding so the latest point isn't on the edge,
+        // with a minimum of 1 minute so the chart is never degenerate.
+        (data_range * 1.1).max(1.0)
+    }
+
+    /// Number of data points in the current session (for choosing marker style).
+    pub fn session_point_count(&self) -> usize {
+        let origin = self
+            .session_start
+            .unwrap_or_else(|| self.snapshots.first().map(|s| s.timestamp).unwrap_or(0));
+        let start_idx = self
+            .snapshots
+            .iter()
+            .rposition(|s| s.timestamp <= origin)
+            .unwrap_or(0);
+        self.snapshots[start_idx..].len()
+    }
+
+    /// Get per-model token rate data (tokens per minute) for the chart.
+    /// Returns Vec of (model_name, Vec<(x, y)>) where:
+    /// - x = minutes since session start
+    /// - y = tokens per minute (computed as delta between consecutive snapshots)
+    pub fn get_rate_series(&self) -> Vec<(String, Vec<(f64, f64)>)> {
+        if self.snapshots.len() < 2 {
+            return Vec::new();
+        }
+
+        let origin = self.session_start.unwrap_or(self.snapshots[0].timestamp);
+
+        let start_idx = self
+            .snapshots
+            .iter()
+            .rposition(|s| s.timestamp <= origin)
+            .unwrap_or(0);
+
+        let session_snapshots = &self.snapshots[start_idx..];
+        if session_snapshots.len() < 2 {
+            return Vec::new();
+        }
+
+        // Collect all unique model names
+        let mut model_names: Vec<String> = Vec::new();
+        for snap in session_snapshots {
+            for (name, _) in &snap.models {
+                if !model_names.contains(name) {
+                    model_names.push(name.clone());
+                }
+            }
+        }
+
+        let mut result = Vec::new();
+        for model_name in &model_names {
+            let mut points = Vec::new();
+            // Start at zero rate
+            let first_x = (session_snapshots[0].timestamp.saturating_sub(origin)) as f64 / 60.0;
+            points.push((first_x, 0.0));
+
+            for pair in session_snapshots.windows(2) {
+                let prev = &pair[0];
+                let curr = &pair[1];
+
+                let dt_secs = curr.timestamp.saturating_sub(prev.timestamp).max(1);
+                let dt_min = dt_secs as f64 / 60.0;
+
+                let prev_val = prev
+                    .models
+                    .iter()
+                    .find(|(n, _)| n == model_name)
+                    .map(|(_, t)| *t)
+                    .unwrap_or(0);
+                let curr_val = curr
+                    .models
+                    .iter()
+                    .find(|(n, _)| n == model_name)
+                    .map(|(_, t)| *t)
+                    .unwrap_or(0);
+
+                let delta = curr_val.saturating_sub(prev_val);
+                let rate = delta as f64 / dt_min;
+
+                let x = (curr.timestamp.saturating_sub(origin)) as f64 / 60.0;
+                points.push((x, rate));
+            }
+
+            // Only include models that had some activity
+            if points.iter().any(|(_, y)| *y > 0.0) {
+                result.push((model_name.clone(), points));
+            }
+        }
+        result
     }
 }
