@@ -22,8 +22,7 @@ pub fn remap_tool_call_args(tool_name: &str, args: &mut Value) {
 fn normalized_tool_name(tool_name: &str) -> String {
     tool_name
         .split(|c| ['/', ':', '.'].contains(&c))
-        .filter(|s| !s.is_empty())
-        .next_back()
+        .rfind(|s| !s.is_empty())
         .unwrap_or(tool_name)
         .to_ascii_lowercase()
 }
