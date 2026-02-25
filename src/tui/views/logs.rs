@@ -1,6 +1,6 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, Wrap,
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation,
 };
 
 use crate::tui::app::{App, LocalSelection, SelectionSource};
@@ -114,7 +114,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(lines);
 
     frame.render_widget(paragraph, logs_area);
 
