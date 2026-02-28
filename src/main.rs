@@ -2238,9 +2238,52 @@ fn compare_versions(a: &str, b: &str) -> bool {
     false
 }
 
-async fn run_update_command() {
-    use crate::fingerprint::KNOWN_STABLE_VERSION;
+fn parse_stable_version_from_updater_response(text: &str) -> Option<String> {
+    text.split_whitespace().find_map(|raw| {
+        let token = raw.trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
+        let token = token.trim_end_matches(|c: char| !c.is_ascii_digit());
+        let version = token.split('-').next().unwrap_or("");
 
+        let parts: Vec<&str> = version.split('.').collect();
+        if parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        {
+            Some(version.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_stable_version_from_updater_response;
+
+    #[test]
+    fn test_parse_stable_version_with_trailing_period() {
+        let response = "Auto updater is running. Stable Version: 1.19.6. Rolled out to 100%";
+        let parsed = parse_stable_version_from_updater_response(response);
+        assert_eq!(parsed.as_deref(), Some("1.19.6"));
+    }
+
+    #[test]
+    fn test_parse_stable_version_with_build_suffix() {
+        let response = "Stable Version: 1.19.6-1772152296";
+        let parsed = parse_stable_version_from_updater_response(response);
+        assert_eq!(parsed.as_deref(), Some("1.19.6"));
+    }
+
+    #[test]
+    fn test_parse_stable_version_missing_semver() {
+        let response = "Auto updater is running. Stable Version: latest";
+        let parsed = parse_stable_version_from_updater_response(response);
+        assert!(parsed.is_none());
+    }
+}
+
+async fn run_update_command() {
     println!();
     println!("{}{}Antigravity Version Check{}", BOLD, CYAN, RESET);
     println!(
@@ -2265,22 +2308,15 @@ async fn run_update_command() {
         Ok(body) => {
             let text = String::from_utf8_lossy(&body);
             // Extract semver from response (format: "... Stable Version: X.Y.Z-hash ...")
-            let latest = text
-                .split(|c: char| c.is_whitespace() || c == '-')
-                .find_map(|token| {
-                    let parts: Vec<&str> = token.split('.').collect();
-                    if parts.len() == 3
-                        && parts
-                            .iter()
-                            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-                    {
-                        Some(token.to_string())
-                    } else {
-                        None
-                    }
-                });
+            let latest = parse_stable_version_from_updater_response(&text);
 
             if let Some(latest) = latest {
+                if let Err(e) = crate::fingerprint::cache_latest_stable_version(&latest) {
+                    println!(
+                        "  {}Warning: failed to cache latest stable version: {}{}",
+                        YELLOW, e, RESET
+                    );
+                }
                 println!("  {}Latest available:{} {}", DIM, RESET, latest);
                 println!();
 
@@ -2291,11 +2327,14 @@ async fn run_update_command() {
                         "{}! Newer Antigravity version available:{} {} → {}",
                         YELLOW, RESET, current, latest
                     );
-                    if current == KNOWN_STABLE_VERSION {
+                    if matches!(
+                        crate::fingerprint::version_source(),
+                        "known stable fallback" | "cached stable fallback"
+                    ) {
                         println!();
                         println!(
-                            "  {}To update, change KNOWN_STABLE_VERSION in src/fingerprint.rs to \"{}\"{}",
-                            DIM, latest, RESET
+                            "  {}Latest stable version cached. Restart agcp to apply this fallback fingerprint.{}",
+                            DIM, RESET
                         );
                     }
                 } else {

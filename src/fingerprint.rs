@@ -5,16 +5,18 @@
 //! at startup and reused for every request.
 
 use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 // ── Known-stable fingerprint library ────────────────────────────────────
-// Antigravity 1.16.5 ships Electron 39.2.3 → Chromium 132.0.6834.160.
+// Antigravity 1.19.6 ships Electron 39.2.3 → Chromium 132.0.6834.160.
 // Used as the fallback when no local installation is detected
 // (Docker, headless servers, etc.).
 
-pub const KNOWN_STABLE_VERSION: &str = "1.16.5";
+pub const KNOWN_STABLE_VERSION: &str = "1.19.6";
 const KNOWN_STABLE_ELECTRON: &str = "39.2.3";
 const KNOWN_STABLE_CHROME: &str = "132.0.6834.160";
+const STABLE_VERSION_CACHE_FILE: &str = "antigravity_stable_version";
 
 // ── Resolved version (computed once) ────────────────────────────────────
 
@@ -22,6 +24,48 @@ struct VersionConfig {
     version: String,
     electron: String,
     chrome: String,
+    source: &'static str,
+}
+
+fn is_semver_triplet(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn stable_version_cache_path() -> PathBuf {
+    crate::config::Config::dir().join(STABLE_VERSION_CACHE_FILE)
+}
+
+fn read_cached_stable_version_from(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let version = content.trim();
+    if is_semver_triplet(version) {
+        Some(version.to_string())
+    } else {
+        None
+    }
+}
+
+fn read_cached_stable_version() -> Option<String> {
+    read_cached_stable_version_from(&stable_version_cache_path())
+}
+
+pub fn cache_latest_stable_version(version: &str) -> std::io::Result<()> {
+    if !is_semver_triplet(version) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "version must be X.Y.Z",
+        ));
+    }
+
+    let path = stable_version_cache_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, format!("{version}\n"))
 }
 
 /// Try to detect the locally installed Antigravity version.
@@ -108,9 +152,7 @@ fn extract_semver(raw: &str) -> Option<String> {
         let p2 = parts.next();
         let p3 = parts.next();
         if let (Some(a), Some(b), Some(c)) = (p1, p2, p3)
-            && [a, b, c]
-                .iter()
-                .all(|p| !p.is_empty() && p.chars().all(|ch| ch.is_ascii_digit()))
+            && is_semver_triplet(&format!("{}.{}.{}", a, b, c))
         {
             return Some(format!("{}.{}.{}", a, b, c));
         }
@@ -130,6 +172,21 @@ fn resolve_version_config() -> VersionConfig {
             version: ver,
             electron: KNOWN_STABLE_ELECTRON.to_string(),
             chrome: KNOWN_STABLE_CHROME.to_string(),
+            source: "local installation",
+        };
+    }
+
+    if let Some(ver) = read_cached_stable_version() {
+        tracing::info!(
+            version = %ver,
+            source = "cached_latest_stable",
+            "Using cached stable Antigravity version"
+        );
+        return VersionConfig {
+            version: ver,
+            electron: KNOWN_STABLE_ELECTRON.to_string(),
+            chrome: KNOWN_STABLE_CHROME.to_string(),
+            source: "cached stable fallback",
         };
     }
 
@@ -142,27 +199,30 @@ fn resolve_version_config() -> VersionConfig {
         version: KNOWN_STABLE_VERSION.to_string(),
         electron: KNOWN_STABLE_ELECTRON.to_string(),
         chrome: KNOWN_STABLE_CHROME.to_string(),
+        source: "known stable fallback",
     }
 }
 
+static RESOLVED_VERSION_CONFIG: LazyLock<VersionConfig> = LazyLock::new(resolve_version_config);
+
 // ── Public statics ──────────────────────────────────────────────────────
 
-/// Resolved Antigravity version (e.g. `"1.16.5"`).
+/// Resolved Antigravity version (e.g. `"1.19.6"`).
 pub static VERSION: LazyLock<String> = LazyLock::new(|| {
-    let cfg = resolve_version_config();
+    let cfg = &*RESOLVED_VERSION_CONFIG;
     // Also trigger USER_AGENT evaluation so logging happens together
     let _ = &*USER_AGENT;
-    cfg.version
+    cfg.version.clone()
 });
 
 /// Electron-style User-Agent that matches the official desktop client.
 ///
 /// ```text
 /// Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
-///   Antigravity/1.16.5 Chrome/132.0.6834.160 Electron/39.2.3 Safari/537.36
+///   Antigravity/1.19.6 Chrome/132.0.6834.160 Electron/39.2.3 Safari/537.36
 /// ```
 pub static USER_AGENT: LazyLock<String> = LazyLock::new(|| {
-    let cfg = resolve_version_config();
+    let cfg = &*RESOLVED_VERSION_CONFIG;
     let platform = match std::env::consts::OS {
         "macos" => "Macintosh; Intel Mac OS X 10_15_7",
         "windows" => "Windows NT 10.0; Win64; x64",
@@ -272,13 +332,7 @@ pub fn build_fingerprint_headers() -> Vec<(Cow<'static, str>, Cow<'static, str>)
 
 /// Returns a human-readable description of how the version was resolved.
 pub fn version_source() -> &'static str {
-    // Compare already-resolved version against fallback to determine source
-    // (avoids re-running detect_local_version which would launch the GUI)
-    if *VERSION == KNOWN_STABLE_VERSION {
-        "known stable fallback"
-    } else {
-        "local installation"
-    }
+    RESOLVED_VERSION_CONFIG.source
 }
 
 /// Returns a human-readable description of how the machine ID was resolved.
@@ -383,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_extract_semver_valid() {
-        assert_eq!(extract_semver("1.16.5"), Some("1.16.5".to_string()));
+        assert_eq!(extract_semver("1.19.6"), Some("1.19.6".to_string()));
         assert_eq!(extract_semver("Version: 2.0.0"), Some("2.0.0".to_string()));
         assert_eq!(extract_semver("v1.2.3 extra"), Some("1.2.3".to_string()));
         assert_eq!(
@@ -397,5 +451,30 @@ mod tests {
         assert_eq!(extract_semver("no version here"), None);
         assert_eq!(extract_semver(""), None);
         assert_eq!(extract_semver("1.2"), None); // only X.Y, not X.Y.Z
+    }
+
+    #[test]
+    fn test_read_cached_stable_version_from_valid_file() {
+        let path = std::env::temp_dir().join(format!(
+            "agcp_test_stable_version_{}_valid",
+            std::process::id()
+        ));
+        std::fs::write(&path, "1.19.6\n").expect("write");
+        assert_eq!(
+            read_cached_stable_version_from(&path),
+            Some("1.19.6".to_string())
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_read_cached_stable_version_from_invalid_file() {
+        let path = std::env::temp_dir().join(format!(
+            "agcp_test_stable_version_{}_invalid",
+            std::process::id()
+        ));
+        std::fs::write(&path, "latest\n").expect("write");
+        assert_eq!(read_cached_stable_version_from(&path), None);
+        let _ = std::fs::remove_file(&path);
     }
 }
